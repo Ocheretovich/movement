@@ -1,12 +1,10 @@
 use anyhow::Result;
 use std::sync::Arc;
 /// A simple demo scenario that sleep a few milli second and log some messages.
-/// To run it use: cargo run --release --bin demoscenario
-use suzuka_client::load_soak_testing::execute_test;
-use suzuka_client::load_soak_testing::init_test;
-use suzuka_client::load_soak_testing::ExecutionConfig;
-use suzuka_client::load_soak_testing::Scenario;
-use suzuka_client::load_soak_testing::TestKind;
+/// To run it use: cargo run --release --bin demo_scenario
+use suzuka_client::load_soak_testing::{
+	execute_test, init_test, ExecutionConfig, Scenario, TestKind,
+};
 
 fn main() {
 	// Define the Test config. Use the default parameters.
@@ -17,7 +15,7 @@ fn main() {
 		min_scenarios: 6,
 		max_scenarios: 10,
 		duration: std::time::Duration::from_secs(20),
-		nb_clycle: 4,
+		number_cycle: 4,
 	};
 
 	// Init the Test before execution
@@ -45,7 +43,6 @@ impl ScenarioDemo {
 	}
 }
 
-// Scenario trait implementation.
 #[async_trait::async_trait]
 impl Scenario for ScenarioDemo {
 	async fn run(self: Box<Self>) -> Result<()> {
