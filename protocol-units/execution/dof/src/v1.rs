@@ -1,6 +1,5 @@
 use crate::{BlockMetadata, DynOptFinExecutor, ExecutableBlock, HashValue, SignedTransaction};
 use aptos_api::runtime::Apis;
-use aptos_config::config::NodeConfig;
 use aptos_mempool::core_mempool::CoreMempool;
 use async_channel::Sender;
 use async_trait::async_trait;
@@ -94,6 +93,17 @@ impl DynOptFinExecutor for Executor {
 
 	fn set_finalized_block_height(&self, height: u64) -> Result<(), anyhow::Error> {
 		self.finality_view.set_finalized_block_height(height)
+	}
+
+	fn revert_block_head(&self, block_height: u64) -> Result<(), anyhow::Error> {
+		if let Some(final_height) = self.finality_view.finalized_block_height() {
+			if block_height < final_height {
+				return Err(format_err!(
+					"Can't revert to height {block_height} preciding the finalized height {final_height}"
+				));
+			}
+		}
+		self.executor.revert_block_head(block_height)
 	}
 
 	/// Sets the transaction channel.
