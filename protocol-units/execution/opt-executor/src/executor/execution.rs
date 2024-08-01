@@ -1,5 +1,4 @@
 use super::Executor;
-use aptos_api::Context;
 use aptos_crypto::HashValue;
 use aptos_executor_types::BlockExecutorTrait;
 use aptos_types::transaction::signature_verified_transaction::into_signature_verified_block;
@@ -17,7 +16,6 @@ use aptos_types::{
 	validator_verifier::{ValidatorConsensusInfo, ValidatorVerifier},
 };
 use movement_types::{BlockCommitment, Commitment, Id};
-use std::sync::Arc;
 use tracing::{debug, info};
 
 impl Executor {
@@ -101,8 +99,10 @@ impl Executor {
 	}
 
 	pub fn get_block_head_height(&self) -> Result<u64, anyhow::Error> {
-		let ledger_info = self.context.get_latest_ledger_info_wrapped()?;
-		Ok(ledger_info.block_height.into())
+		let ledger_info = self.db.reader.get_latest_ledger_info()?;
+		let (_, _, new_block_event) =
+			self.db.reader.get_block_info_by_version(ledger_info.ledger_info().version())?;
+		Ok(new_block_event.height)
 	}
 
 	pub fn revert_block_head_to(&self, block_height: u64) -> Result<(), anyhow::Error> {
@@ -124,10 +124,6 @@ impl Executor {
 		// Reset the executor state to the reverted storage
 		self.block_executor.reset()?;
 		Ok(())
-	}
-
-	pub fn context(&self) -> Arc<Context> {
-		self.context.clone()
 	}
 
 	/// Gets the next epoch and round.
@@ -221,8 +217,8 @@ impl Executor {
 
 #[cfg(test)]
 mod tests {
-
 	use super::*;
+	use crate::Service;
 	use aptos_api::accept_type::AcceptType;
 	use aptos_crypto::{
 		ed25519::{Ed25519PrivateKey, Ed25519Signature},
@@ -246,6 +242,7 @@ mod tests {
 		transaction::{RawTransaction, Script, SignedTransaction, Transaction, TransactionPayload},
 	};
 	use rand::SeedableRng;
+	use tokio::sync::mpsc;
 
 	fn create_signed_transaction(gas_unit_price: u64, chain_id: ChainId) -> SignedTransaction {
 		let private_key = Ed25519PrivateKey::generate_for_testing();
@@ -399,6 +396,9 @@ mod tests {
 		// Create an executor instance from the environment configuration.
 		let private_key = Ed25519PrivateKey::generate_for_testing();
 		let (executor, _tempdir) = Executor::try_test_default(private_key.clone())?;
+		let (tx_sender, _tx_receiver) = mpsc::channel(16);
+		let (context, _transaction_pipe) = executor.background(tx_sender);
+		let service = Service::new(&context);
 		executor.rollover_genesis_now().await?;
 
 		// Initialize a root account using a predefined keypair and the test root address.
@@ -462,7 +462,7 @@ mod tests {
 			executor.execute_block(block).await?;
 
 			// Retrieve the executor's API interface and fetch the transaction by each hash.
-			let apis = executor.get_apis();
+			let apis = service.get_apis();
 			for hash in transaction_hashes {
 				let _ = apis
 					.transactions

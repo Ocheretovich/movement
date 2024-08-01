@@ -2,7 +2,7 @@ use crate::{BlockMetadata, DynOptFinExecutor, ExecutableBlock, HashValue, Signed
 use aptos_api::runtime::Apis;
 use aptos_mempool::core_mempool::CoreMempool;
 use maptos_fin_view::FinalityView;
-use maptos_opt_executor::transaction_pipe::TransactionPipeError;
+use maptos_opt_executor::transaction_pipe::Error;
 use maptos_opt_executor::Executor as OptExecutor;
 use movement_types::BlockCommitment;
 
@@ -14,8 +14,6 @@ use tokio::time::Duration;
 use tokio_stream::wrappers::IntervalStream;
 use tokio_stream::StreamExt;
 use tracing::{debug, info};
-
-use std::sync::atomic::Ordering;
 
 #[derive(Clone)]
 pub struct Executor {
@@ -79,7 +77,7 @@ impl DynOptFinExecutor for Executor {
 			{
 				Ok(_) => {}
 				Err(e) => match e {
-					TransactionPipeError::TransactionNotAccepted(e) => {
+					Error::TransactionNotAccepted(e) => {
 						// allow the transaction not to be accepted by the mempool
 						// because the client may have sent a bad sequence number
 						tracing::warn!("Transaction not accepted: {:?}", e);
@@ -150,20 +148,7 @@ impl DynOptFinExecutor for Executor {
 	}
 
 	fn decrement_transactions_in_flight(&self, count: u64) {
-		// fetch sub mind the underflow
-		// a semaphore might be better here as this will rerun until the value does not change during the operation
-		self.executor
-			.transactions_in_flight
-			.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-				info!(
-					target: "movement_timing",
-					count,
-					current,
-					"decrementing_transactions_in_flight",
-				);
-				Some(current.saturating_sub(count))
-			})
-			.unwrap_or_else(|_| 0);
+		self.executor.decrement_transactions_in_flight(count)
 	}
 }
 
