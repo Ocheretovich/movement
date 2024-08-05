@@ -108,15 +108,15 @@ impl TransactionPipe {
 					);
 					let status = self.submit_transaction(transaction).instrument(span).await?;
 
-					callback.send(Ok(status)).map_err(|e| {
-						Error::InternalError(format!("Error sending transaction: {:?}", e))
-					})?;
+					callback.send(Ok(status)).unwrap_or_else(|_| {
+						debug!("SubmitTransaction request canceled");
+					});
 				}
 				MempoolClientRequest::GetTransactionByHash(hash, sender) => {
 					let mempool_result = self.core_mempool.get_by_hash(hash);
-					sender.send(mempool_result).map_err(|e| {
-						Error::InternalError(format!("Error sending transaction: {:?}", e))
-					})?;
+					sender.send(mempool_result).unwrap_or_else(|_| {
+						debug!("GetTransactionByHash request canceled");
+					});
 				}
 			}
 		}
