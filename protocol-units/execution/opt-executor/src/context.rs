@@ -1,7 +1,9 @@
 use aptos_config::config::NodeConfig;
 use aptos_mempool::MempoolClientSender;
-use aptos_storage_interface::DbReaderWriter;
+use aptos_storage_interface::{DbReader, DbReaderWriter};
 use maptos_execution_util::config::chain::Config as ChainConfig;
+
+use std::sync::Arc;
 
 /// Infrastructure shared by services using the storage and the mempool.
 pub struct Context {
@@ -19,5 +21,15 @@ impl Context {
 		node_config: NodeConfig,
 	) -> Self {
 		Context { db, mempool_client_sender, chain_config, node_config }
+	}
+
+	/// Returns a reference on the data store reader.
+	pub fn db_reader(&self) -> Arc<dyn DbReader> {
+		Arc::clone(&self.db.reader)
+	}
+
+	/// Returns a clone of the mempool client channel's sender.
+	pub fn mempool_client_sender(&self) -> MempoolClientSender {
+		self.mempool_client_sender.clone()
 	}
 }
