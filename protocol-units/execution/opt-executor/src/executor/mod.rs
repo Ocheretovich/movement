@@ -18,7 +18,6 @@ use std::sync::Arc;
 
 /// The `Executor` is responsible for executing blocks and managing the state of the execution
 /// against the `AptosVM`.
-#[derive(Clone)]
 pub struct Executor {
 	/// The executing type.
 	pub block_executor: Arc<BlockExecutor<AptosVM>>,

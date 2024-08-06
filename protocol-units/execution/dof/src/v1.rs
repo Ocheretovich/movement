@@ -3,39 +3,41 @@ use aptos_api::runtime::Apis;
 use aptos_mempool::core_mempool::CoreMempool;
 use maptos_fin_view::FinalityView;
 use maptos_opt_executor::transaction_pipe::Error;
-use maptos_opt_executor::Executor as OptExecutor;
+use maptos_opt_executor::{Context as ExecutorContext, Executor as OptExecutor};
 use movement_types::BlockCommitment;
 
 use anyhow::format_err;
-use async_channel::Sender;
 use async_trait::async_trait;
-use tokio::time::interval;
-use tokio::time::Duration;
-use tokio_stream::wrappers::IntervalStream;
-use tokio_stream::StreamExt;
+use tokio::sync::mpsc::Sender;
 use tracing::{debug, info};
 
-#[derive(Clone)]
+use std::future::Future;
+
 pub struct Executor {
 	pub executor: OptExecutor,
+	context: ExecutorContext,
 	finality_view: FinalityView,
-	pub transaction_channel: Sender<SignedTransaction>,
 }
 
 impl Executor {
 	pub fn new(
 		executor: OptExecutor,
-		finality_view: FinalityView,
-		transaction_channel: Sender<SignedTransaction>,
-	) -> Self {
-		Self { executor, finality_view, transaction_channel }
+		transaction_sender: Sender<SignedTransaction>,
+	) -> (Self, impl Future<Output = Result<(), anyhow::Error>> + Send) {
+		let (context, transaction_pipe) = executor.background(transaction_sender);
+		let finality_view = FinalityView::new(context.db_reader());
+		let background = async move {
+			transaction_pipe.run().await?;
+			Ok(())
+		};
+		(Self { executor, context, finality_view }, background)
 	}
 
 	pub fn try_from_config(
-		transaction_channel: Sender<SignedTransaction>,
+		transaction_sender: Sender<SignedTransaction>,
 		config: maptos_execution_util::config::Config,
 	) -> Result<Self, anyhow::Error> {
-		let executor = OptExecutor::try_from_config(&config.clone())?;
+		let executor = OptExecutor::try_from_config(&config)?;
 		let finality_view = FinalityView::try_from_config(
 			executor.db.reader.clone(),
 			executor.mempool_client_sender.clone(),
