@@ -8,11 +8,11 @@ use tokio::runtime::Runtime;
 
 /// Runtime handle for indexer services. This object should be kept alive
 /// while services are running.
-#[allow(dead_code)] // we only keep the runtimes around to drop them
 pub struct IndexerRuntime {
-	table_info_runtime: Runtime,
-	indexer_grpc: Runtime,
-	indexer_stream: Runtime,
+	// We only keep the runtimes around to drop them
+	_table_info_runtime: Runtime,
+	_indexer_grpc: Runtime,
+	_indexer_stream: Runtime,
 }
 
 impl Context {
@@ -21,7 +21,7 @@ impl Context {
 		tracing::info!("Starting indexer gRPC with node config {:?}", self.node_config);
 
 		// bootstrap table info
-		let (table_info_runtime, _async_indexer) = bootstrap_table_info(
+		let (_table_info_runtime, _async_indexer) = bootstrap_table_info(
 			&self.node_config,
 			self.chain_config.maptos_chain_id.clone(),
 			self.db.clone(),
@@ -31,7 +31,7 @@ impl Context {
 
 		// bootstrap indexer grpc
 		// this one actually serves the gRPC service
-		let indexer_grpc = bootstrap_indexer_grpc(
+		let _indexer_grpc = bootstrap_indexer_grpc(
 			&self.node_config,
 			self.chain_config.maptos_chain_id.clone(),
 			self.db.reader.clone(),
@@ -41,7 +41,7 @@ impl Context {
 		.ok_or(anyhow::anyhow!("Failed to bootstrap indexer grpc runtime"))?;
 
 		// bootstrap indexer stream
-		let indexer_stream = bootstrap_indexer_stream(
+		let _indexer_stream = bootstrap_indexer_stream(
 			&self.node_config,
 			self.chain_config.maptos_chain_id.clone(),
 			self.db.reader.clone(),
@@ -49,6 +49,6 @@ impl Context {
 		)
 		.ok_or(anyhow::anyhow!("Failed to bootstrap indexer stream runtime"))??;
 
-		Ok(IndexerRuntime { table_info_runtime, indexer_grpc, indexer_stream })
+		Ok(IndexerRuntime { _table_info_runtime, _indexer_grpc, _indexer_stream })
 	}
 }
