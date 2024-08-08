@@ -79,26 +79,6 @@ impl TransactionPipe {
 		if let Some(request) = next {
 			match request {
 				MempoolClientRequest::SubmitTransaction(transaction, callback) => {
-					// For now, we are going to consider a transaction in flight until it exits the mempool and is sent to the DA as is indicated by WriteBatch.
-					let in_flight =
-						self.transactions_in_flight.load(std::sync::atomic::Ordering::Relaxed);
-					info!(
-						target: "movement_timing",
-						in_flight = %in_flight,
-						"transactions_in_flight"
-					);
-					if in_flight > IN_FLIGHT_LIMIT {
-						info!(
-							target: "movement_timing",
-							"shedding_load"
-						);
-						let status = MempoolStatus::new(MempoolStatusCode::MempoolIsFull);
-						callback.send(Ok((status, None))).map_err(|e| {
-							Error::InternalError(format!("Error sending transaction: {:?}", e))
-						})?;
-						return Ok(());
-					}
-
 					let span = info_span!(
 						target: "movement_timing",
 						"submit_transaction",
@@ -107,7 +87,6 @@ impl TransactionPipe {
 						sequence_number = transaction.sequence_number(),
 					);
 					let status = self.submit_transaction(transaction).instrument(span).await?;
-
 					callback.send(Ok(status)).unwrap_or_else(|_| {
 						debug!("SubmitTransaction request canceled");
 					});
@@ -133,6 +112,22 @@ impl TransactionPipe {
 		&mut self,
 		transaction: SignedTransaction,
 	) -> Result<SubmissionStatus, Error> {
+		// For now, we are going to consider a transaction in flight until it exits the mempool and is sent to the DA as is indicated by WriteBatch.
+		let in_flight = self.transactions_in_flight.load(std::sync::atomic::Ordering::Relaxed);
+		info!(
+			target: "movement_timing",
+			in_flight = %in_flight,
+			"transactions_in_flight"
+		);
+		if in_flight > IN_FLIGHT_LIMIT {
+			info!(
+				target: "movement_timing",
+				"shedding_load"
+			);
+			let status = MempoolStatus::new(MempoolStatusCode::MempoolIsFull);
+			return Ok((status, None));
+		}
+
 		// Pre-execute Tx to validate its content.
 		// Re-create the validator for each Tx because it uses a frozen version of the ledger.
 		// let vm_validator = VMValidator::new(Arc::clone(&self.db.reader));
