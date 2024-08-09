@@ -8,7 +8,7 @@ use aptos_crypto::PrivateKey;
 use aptos_executor::block_executor::BlockExecutor;
 use aptos_mempool::MempoolClientRequest;
 use aptos_types::transaction::SignedTransaction;
-use maptos_execution_util::config::Config;
+use maptos_execution_util::config::{chain::Config as ChainConfig, Config};
 
 use anyhow::Context as _;
 use futures::channel::mpsc as futures_mpsc;
@@ -21,25 +21,30 @@ use std::sync::{atomic::AtomicU64, Arc};
 
 impl Executor {
 	pub fn bootstrap(
+		transaction_sender: mpsc::Sender<SignedTransaction>,
+		chain_config: ChainConfig,
 		node_config: NodeConfig,
-		maptos_config: Config,
-	) -> Result<Self, anyhow::Error> {
+	) -> Result<(Self, Context, TransactionPipe), anyhow::Error> {
 		let (db, signer) = bootstrap::maybe_bootstrap_empty_db(
-			maptos_config.chain.maptos_db_path.as_ref().context("No db path provided.")?,
-			maptos_config.chain.maptos_chain_id.clone(),
-			&maptos_config.chain.maptos_private_key.public_key(),
+			chain_config.maptos_db_path.as_ref().context("No db path provided.")?,
+			chain_config.maptos_chain_id.clone(),
+			&chain_config.maptos_private_key.public_key(),
 		)?;
-		Ok(Self {
+		let executor = Self {
 			block_executor: Arc::new(BlockExecutor::new(db.clone())),
 			db,
 			signer,
-			node_config,
-			maptos_config,
 			transactions_in_flight: Arc::new(AtomicU64::new(0)),
-		})
+		};
+		let (context, transaction_pipe) =
+			executor.background(transaction_sender, chain_config, node_config);
+		Ok((executor, context, transaction_pipe))
 	}
 
-	pub fn try_from_config(maptos_config: &Config) -> Result<Self, anyhow::Error> {
+	pub fn try_from_config(
+		transaction_sender: mpsc::Sender<SignedTransaction>,
+		maptos_config: &Config,
+	) -> Result<(Self, Context, TransactionPipe), anyhow::Error> {
 		let mut node_config = NodeConfig::default();
 
 		node_config.indexer.enabled = true;
@@ -74,13 +79,14 @@ impl Executor {
 		node_config.storage.dir = "./.movement/maptos-storage".to_string().into();
 		node_config.storage.set_data_dir(node_config.storage.dir.clone());
 
-		Self::bootstrap(node_config, maptos_config.clone())
+		Self::bootstrap(transaction_sender, maptos_config.chain.clone(), node_config)
 	}
 
 	#[cfg(test)]
 	pub fn try_test_default(
+		transaction_sender: mpsc::Sender<SignedTransaction>,
 		private_key: Ed25519PrivateKey,
-	) -> Result<(Self, TempDir), anyhow::Error> {
+	) -> Result<(Self, Context, TransactionPipe, TempDir), anyhow::Error> {
 		let tempdir = tempfile::tempdir()?;
 
 		let mut maptos_config = Config::default();
@@ -88,8 +94,9 @@ impl Executor {
 
 		// replace the db path with the temporary directory
 		maptos_config.chain.maptos_db_path.replace(tempdir.path().to_path_buf());
-		let executor = Self::try_from_config(&maptos_config)?;
-		Ok((executor, tempdir))
+		let (executor, context, transaction_pipe) =
+			Self::try_from_config(transaction_sender, &maptos_config)?;
+		Ok((executor, context, transaction_pipe, tempdir))
 	}
 
 	/// Creates instance of `Context` and the background `TransactionPipe`
@@ -97,6 +104,8 @@ impl Executor {
 	pub fn background(
 		&self,
 		transaction_sender: mpsc::Sender<SignedTransaction>,
+		chain_config: ChainConfig,
+		node_config: NodeConfig,
 	) -> (Context, TransactionPipe) {
 		// use the default signer, block executor, and mempool
 		let (mempool_client_sender, mempool_client_receiver) =
@@ -104,15 +113,10 @@ impl Executor {
 		let transaction_pipe = TransactionPipe::new(
 			mempool_client_receiver,
 			transaction_sender,
-			&self.node_config,
+			&node_config,
 			Arc::clone(&self.transactions_in_flight),
 		);
-		let cx = Context::new(
-			self.db.clone(),
-			mempool_client_sender,
-			self.maptos_config.chain.clone(),
-			self.node_config.clone(),
-		);
+		let cx = Context::new(self.db.clone(), mempool_client_sender, chain_config, node_config);
 		(cx, transaction_pipe)
 	}
 }

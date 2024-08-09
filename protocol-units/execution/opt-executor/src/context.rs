@@ -32,4 +32,8 @@ impl Context {
 	pub fn mempool_client_sender(&self) -> MempoolClientSender {
 		self.mempool_client_sender.clone()
 	}
+
+	pub fn chain_config(&self) -> &ChainConfig {
+		&self.chain_config
+	}
 }

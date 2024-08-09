@@ -187,7 +187,7 @@ mod tests {
 	use aptos_vm_genesis::GENESIS_KEYPAIR;
 	use futures::channel::oneshot;
 	use futures::SinkExt;
-	use maptos_execution_util::config::Config;
+	use maptos_execution_util::config::chain::Config;
 
 	fn setup() -> (TransactionPipe, MempoolClientSender, mpsc::Receiver<SignedTransaction>) {
 		// use the default signer, block executor, and mempool
@@ -204,17 +204,14 @@ mod tests {
 		(transaction_pipe, mempool_client_sender, tx_receiver)
 	}
 
-	fn create_signed_transaction(
-		sequence_number: u64,
-		maptos_config: &Config,
-	) -> SignedTransaction {
+	fn create_signed_transaction(sequence_number: u64, chain_config: &Config) -> SignedTransaction {
 		let address = account_config::aptos_test_root_address();
 		transaction_test_helpers::get_test_txn_with_chain_id(
 			address,
 			sequence_number,
 			&GENESIS_KEYPAIR.0,
 			GENESIS_KEYPAIR.1.clone(),
-			maptos_config.chain.maptos_chain_id.clone(), // This is the value used in aptos testing code.
+			chain_config.maptos_chain_id.clone(), // This is the value used in aptos testing code.
 		)
 	}
 
@@ -310,9 +307,9 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_pipe_mempool_from_api() -> Result<(), anyhow::Error> {
-		let (executor, _tempdir) = Executor::try_test_default(GENESIS_KEYPAIR.0.clone())?;
 		let (tx_sender, mut tx_receiver) = mpsc::channel(16);
-		let (context, mut transaction_pipe) = executor.background(tx_sender);
+		let (_executor, context, mut transaction_pipe, _tempdir) =
+			Executor::try_test_default(tx_sender, GENESIS_KEYPAIR.0.clone())?;
 		let service = Service::new(&context);
 
 		#[allow(unreachable_code)]
@@ -324,7 +321,7 @@ mod tests {
 		});
 
 		let api = service.get_apis();
-		let user_transaction = create_signed_transaction(1, &executor.maptos_config);
+		let user_transaction = create_signed_transaction(1, context.chain_config());
 		let comparison_user_transaction = user_transaction.clone();
 		let bcs_user_transaction = bcs::to_bytes(&user_transaction)?;
 		let request = SubmitTransactionPost::Bcs(aptos_api::bcs_payload::Bcs(bcs_user_transaction));
@@ -339,9 +336,9 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_repeated_pipe_mempool_from_api() -> Result<(), anyhow::Error> {
-		let (executor, _tempdir) = Executor::try_test_default(GENESIS_KEYPAIR.0.clone())?;
 		let (tx_sender, mut tx_receiver) = mpsc::channel(16);
-		let (context, mut transaction_pipe) = executor.background(tx_sender);
+		let (_executor, context, mut transaction_pipe, _tempdir) =
+			Executor::try_test_default(tx_sender, GENESIS_KEYPAIR.0.clone())?;
 		let service = Service::new(&context);
 
 		#[allow(unreachable_code)]
@@ -356,7 +353,7 @@ mod tests {
 		let mut user_transactions = BTreeSet::new();
 		let mut comparison_user_transactions = BTreeSet::new();
 		for i in 1..25 {
-			let user_transaction = create_signed_transaction(i, &executor.maptos_config);
+			let user_transaction = create_signed_transaction(i, context.chain_config());
 			let bcs_user_transaction = bcs::to_bytes(&user_transaction)?;
 			user_transactions.insert(bcs_user_transaction.clone());
 

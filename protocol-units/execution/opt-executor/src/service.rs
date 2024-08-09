@@ -96,37 +96,34 @@ mod tests {
 	use aptos_vm_genesis::GENESIS_KEYPAIR;
 	use futures::channel::oneshot;
 	use futures::SinkExt;
-	use maptos_execution_util::config::Config;
+	use maptos_execution_util::config::chain::Config;
 	use tokio::sync::mpsc;
 
-	fn create_signed_transaction(
-		sequence_number: u64,
-		maptos_config: &Config,
-	) -> SignedTransaction {
+	fn create_signed_transaction(sequence_number: u64, chain_config: &Config) -> SignedTransaction {
 		let address = account_config::aptos_test_root_address();
 		transaction_test_helpers::get_test_txn_with_chain_id(
 			address,
 			sequence_number,
 			&GENESIS_KEYPAIR.0,
 			GENESIS_KEYPAIR.1.clone(),
-			maptos_config.chain.maptos_chain_id.clone(), // This is the value used in aptos testing code.
+			chain_config.maptos_chain_id.clone(), // This is the value used in aptos testing code.
 		)
 	}
 
 	#[tokio::test]
 	async fn test_pipe_mempool_while_server_running() -> Result<(), anyhow::Error> {
-		let (executor, _tempdir) = Executor::try_test_default(GENESIS_KEYPAIR.0.clone())?;
 		let (tx_sender, mut tx_receiver) = mpsc::channel(16);
-		let (mut context, mut transaction_pipe) = executor.background(tx_sender);
+		let (_executor, context, mut transaction_pipe, _tempdir) =
+			Executor::try_test_default(tx_sender, GENESIS_KEYPAIR.0.clone())?;
 		let service = Service::new(&context);
 		let handle = tokio::spawn(async move { service.run().await });
 
-		let user_transaction = create_signed_transaction(0, &executor.maptos_config);
+		let user_transaction = create_signed_transaction(0, context.chain_config());
 
 		// send transaction to mempool
 		let (req_sender, callback) = oneshot::channel();
 		context
-			.mempool_client_sender
+			.mempool_client_sender()
 			.send(MempoolClientRequest::SubmitTransaction(user_transaction.clone(), req_sender))
 			.await?;
 
