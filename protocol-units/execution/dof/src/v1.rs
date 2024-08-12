@@ -1,15 +1,15 @@
 use crate::{BlockMetadata, DynOptFinExecutor, ExecutableBlock, HashValue, SignedTransaction};
 use aptos_api::runtime::Apis;
-use aptos_mempool::core_mempool::CoreMempool;
+use maptos_execution_util::config::Config;
 use maptos_fin_view::FinalityView;
-use maptos_opt_executor::transaction_pipe::Error;
-use maptos_opt_executor::{Context as ExecutorContext, Executor as OptExecutor};
+use maptos_opt_executor::{Context as ExecutorContext, Executor as OptExecutor, TransactionPipe};
 use movement_types::BlockCommitment;
 
 use anyhow::format_err;
 use async_trait::async_trait;
 use tokio::sync::mpsc::Sender;
-use tracing::{debug, info};
+use tokio::try_join;
+use tracing::debug;
 
 use std::future::Future;
 
@@ -19,12 +19,17 @@ pub struct Executor {
 	finality_view: FinalityView,
 }
 
+pub struct Services {
+	opt: maptos_opt_executor::Service,
+	fin: maptos_fin_view::Service,
+}
+
 impl Executor {
 	pub fn new(
 		executor: OptExecutor,
-		transaction_sender: Sender<SignedTransaction>,
+		context: ExecutorContext,
+		transaction_pipe: TransactionPipe,
 	) -> (Self, impl Future<Output = Result<(), anyhow::Error>> + Send) {
-		let (context, transaction_pipe) = executor.background(transaction_sender);
 		let finality_view = FinalityView::new(context.db_reader());
 		let background = async move {
 			transaction_pipe.run().await?;
@@ -35,61 +40,26 @@ impl Executor {
 
 	pub fn try_from_config(
 		transaction_sender: Sender<SignedTransaction>,
-		config: maptos_execution_util::config::Config,
-	) -> Result<Self, anyhow::Error> {
-		let executor = OptExecutor::try_from_config(&config)?;
-		let finality_view = FinalityView::try_from_config(
-			executor.db.reader.clone(),
-			executor.mempool_client_sender.clone(),
-			config,
-		)?;
-		Ok(Self::new(executor, finality_view, transaction_channel))
+		config: Config,
+	) -> Result<(Self, impl Future<Output = Result<(), anyhow::Error>> + Send), anyhow::Error> {
+		let (executor, context, transaction_pipe) =
+			OptExecutor::try_from_config(transaction_sender, config)?;
+		Ok(Self::new(executor, context, transaction_pipe))
+	}
+
+	pub fn services(&self) -> Services {
+		let opt = maptos_opt_executor::Service::new(&self.context);
+		let fin = self.finality_view.service(
+			self.context.mempool_client_sender(),
+			self.context.config(),
+			self.context.node_config().clone(),
+		);
+		Services { opt, fin }
 	}
 }
 
 #[async_trait]
 impl DynOptFinExecutor for Executor {
-	/// Runs the service.
-	async fn run_service(&self) -> Result<(), anyhow::Error> {
-		tokio::try_join!(
-			self.executor.run_service(),
-			self.executor.run_indexer_grpc_service(),
-			self.finality_view.run_service(),
-		)?;
-		Ok(())
-	}
-
-	async fn run_background_tasks(&self) -> Result<(), anyhow::Error> {
-		/*let mut node_config = NodeConfig::default();
-		node_config.indexer_table_info.enabled = true;
-		node_config.storage.dir = "./.movement/maptos-storage".to_string().into();
-		node_config.storage.set_data_dir(node_config.storage.dir.clone());*/
-		let mut core_mempool = CoreMempool::new(&self.executor.node_config);
-		let mut last_gc = std::time::Instant::now();
-		loop {
-			// readers should be able to run concurrently
-			match self
-				.executor
-				.tick_transaction_pipe(
-					&mut core_mempool,
-					self.transaction_channel.clone(),
-					&mut last_gc,
-				)
-				.await
-			{
-				Ok(_) => {}
-				Err(e) => match e {
-					Error::TransactionNotAccepted(e) => {
-						// allow the transaction not to be accepted by the mempool
-						// because the client may have sent a bad sequence number
-						tracing::warn!("Transaction not accepted: {:?}", e);
-					}
-					_ => anyhow::bail!("Server error: {:?}", e),
-				},
-			}
-		}
-	}
-
 	async fn execute_block_opt(
 		&self,
 		block: ExecutableBlock,
@@ -111,19 +81,6 @@ impl DynOptFinExecutor for Executor {
 			}
 		}
 		self.executor.revert_block_head_to(block_height)
-	}
-
-	/// Sets the transaction channel.
-	fn set_tx_channel(&mut self, tx_channel: Sender<SignedTransaction>) {
-		self.transaction_channel = tx_channel;
-	}
-
-	fn get_opt_apis(&self) -> Apis {
-		self.executor.get_apis()
-	}
-
-	fn get_fin_apis(&self) -> Apis {
-		self.finality_view.get_apis()
 	}
 
 	/// Get block head height.
@@ -154,6 +111,22 @@ impl DynOptFinExecutor for Executor {
 	}
 }
 
+impl Services {
+	pub fn get_opt_apis(&self) -> Apis {
+		self.opt.get_apis()
+	}
+
+	pub fn get_fin_apis(&self) -> Apis {
+		self.fin.get_apis()
+	}
+
+	pub async fn run(self) -> anyhow::Result<()> {
+		let (opt_res, fin_res) =
+			try_join!(tokio::spawn(self.opt.run()), tokio::spawn(self.fin.run()))?;
+		opt_res.and(fin_res)
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -181,6 +154,7 @@ mod tests {
 	use maptos_execution_util::config::Config;
 
 	use rand::SeedableRng;
+	use tokio::sync::mpsc;
 
 	use std::collections::HashMap;
 
@@ -203,8 +177,8 @@ mod tests {
 	#[tokio::test]
 	async fn test_execute_opt_block() -> Result<(), anyhow::Error> {
 		let config = Config::default();
-		let (tx, _rx) = async_channel::unbounded();
-		let executor = Executor::try_from_config(tx, config)?;
+		let (tx, _rx) = mpsc::channel(16);
+		let (executor, _background) = Executor::try_from_config(tx, config)?;
 		let block_id = HashValue::random();
 		let block_metadata = executor
 			.build_block_metadata(block_id.clone(), chrono::Utc::now().timestamp_micros() as u64)
@@ -227,20 +201,13 @@ mod tests {
 	#[tokio::test]
 	async fn test_pipe_transactions_from_api() -> Result<(), anyhow::Error> {
 		let config = Config::default();
-		let (tx, rx) = async_channel::unbounded();
-		let executor = Executor::try_from_config(tx, config)?;
-		let services_executor = executor.clone();
-		let background_executor = executor.clone();
+		let (tx_sender, mut tx_receiver) = mpsc::channel(16);
+		let (executor, background) = Executor::try_from_config(tx_sender, config)?;
+		let services = executor.services();
+		let api = services.get_opt_apis();
 
-		let services_handle = tokio::spawn(async move {
-			services_executor.run_service().await?;
-			Ok(()) as Result<(), anyhow::Error>
-		});
-
-		let background_handle = tokio::spawn(async move {
-			background_executor.run_background_tasks().await?;
-			Ok(()) as Result<(), anyhow::Error>
-		});
+		let services_handle = tokio::spawn(services.run());
+		let background_handle = tokio::spawn(background);
 
 		// Start the background tasks
 		let user_transaction = create_signed_transaction(0);
@@ -248,12 +215,11 @@ mod tests {
 		let bcs_user_transaction = bcs::to_bytes(&user_transaction)?;
 
 		let request = SubmitTransactionPost::Bcs(aptos_api::bcs_payload::Bcs(bcs_user_transaction));
-		let api = executor.get_opt_apis();
 		api.transactions.submit_transaction(AcceptType::Bcs, request).await?;
 
 		services_handle.abort();
 		background_handle.abort();
-		let received_transaction = rx.recv().await?;
+		let received_transaction = tx_receiver.recv().await.unwrap();
 		assert_eq!(received_transaction, comparison_user_transaction);
 
 		Ok(())
@@ -262,20 +228,13 @@ mod tests {
 	#[tokio::test]
 	async fn test_pipe_transactions_from_api_and_execute() -> Result<(), anyhow::Error> {
 		let config = Config::default();
-		let (tx, rx) = async_channel::unbounded();
-		let executor = Executor::try_from_config(tx, config)?;
-		let services_executor = executor.clone();
-		let background_executor = executor.clone();
+		let (tx_sender, mut tx_receiver) = mpsc::channel(16);
+		let (executor, background) = Executor::try_from_config(tx_sender, config)?;
+		let services = executor.services();
+		let api = services.get_opt_apis();
 
-		let services_handle = tokio::spawn(async move {
-			services_executor.run_service().await?;
-			Ok(()) as Result<(), anyhow::Error>
-		});
-
-		let background_handle = tokio::spawn(async move {
-			background_executor.run_background_tasks().await?;
-			Ok(()) as Result<(), anyhow::Error>
-		});
+		let services_handle = tokio::spawn(services.run());
+		let background_handle = tokio::spawn(background);
 
 		// Start the background tasks
 		let user_transaction = create_signed_transaction(0);
@@ -283,10 +242,9 @@ mod tests {
 		let bcs_user_transaction = bcs::to_bytes(&user_transaction)?;
 
 		let request = SubmitTransactionPost::Bcs(aptos_api::bcs_payload::Bcs(bcs_user_transaction));
-		let api = executor.get_opt_apis();
 		api.transactions.submit_transaction(AcceptType::Bcs, request).await?;
 
-		let received_transaction = rx.recv().await?;
+		let received_transaction = tx_receiver.recv().await.unwrap();
 		assert_eq!(received_transaction, comparison_user_transaction);
 
 		// Now execute the block
@@ -328,19 +286,14 @@ mod tests {
 		}
 
 		let config = Config::default();
-		let (tx, rx) = async_channel::unbounded::<SignedTransaction>();
-		let executor = Executor::try_from_config(tx, config)?;
-		let services_executor = executor.clone();
-		let background_executor = executor.clone();
-		let services_handle = tokio::spawn(async move {
-			services_executor.run_service().await?;
-			Ok(()) as Result<(), anyhow::Error>
-		});
+		let (tx_sender, mut tx_receiver) = mpsc::channel(16);
+		let (executor, background) = Executor::try_from_config(tx_sender, config)?;
+		let services = executor.services();
+		let api = services.get_opt_apis();
 
-		let background_handle = tokio::spawn(async move {
-			background_executor.run_background_tasks().await?;
-			Ok(()) as Result<(), anyhow::Error>
-		});
+		let services_handle = tokio::spawn(services.run());
+		let background_handle = tokio::spawn(background);
+
 		let mut committed_blocks = HashMap::new();
 
 		let mut val_generator = ValueGenerator::new();
@@ -357,10 +310,9 @@ mod tests {
 
 			let request =
 				SubmitTransactionPost::Bcs(aptos_api::bcs_payload::Bcs(bcs_user_transaction));
-			let api = executor.get_opt_apis();
 			api.transactions.submit_transaction(AcceptType::Bcs, request).await?;
 
-			let received_transaction = rx.recv().await?;
+			let received_transaction = tx_receiver.recv().await.unwrap();
 			assert_eq!(received_transaction, comparison_user_transaction);
 
 			// Now execute the block
@@ -420,15 +372,18 @@ mod tests {
 	#[tokio::test]
 	async fn test_execute_block_state_get_api() -> Result<(), anyhow::Error> {
 		// Create an executor instance from the environment configuration.
-		let (tx, _rx) = async_channel::unbounded::<SignedTransaction>();
 		let config = Config::default();
-		let chain_config = config.chain.clone();
-		let executor = Executor::try_from_config(tx, config)?;
+		let (tx_sender, _tx_receiver) = mpsc::channel(16);
+		let (executor, background) = Executor::try_from_config(tx_sender, config.clone())?;
+		let services = executor.services();
+		let apis = services.get_opt_apis();
+
+		let background_handle = tokio::spawn(background);
 
 		// Initialize a root account using a predefined keypair and the test root address.
 		let root_account = LocalAccount::new(
 			aptos_test_root_address(),
-			AccountKey::from_private_key(chain_config.maptos_private_key),
+			AccountKey::from_private_key(config.chain.maptos_private_key),
 			0,
 		);
 
@@ -437,7 +392,7 @@ mod tests {
 		let mut rng = ::rand::rngs::StdRng::from_seed(seed);
 
 		// Create a transaction factory with the chain ID of the executor.
-		let tx_factory = TransactionFactory::new(chain_config.maptos_chain_id);
+		let tx_factory = TransactionFactory::new(config.chain.maptos_chain_id);
 
 		// Simulate the execution of multiple blocks.
 		for _ in 0..10 {
@@ -474,7 +429,6 @@ mod tests {
 			executor.execute_block_opt(block).await?;
 
 			// Retrieve the executor's API interface and fetch the transaction by each hash.
-			let apis = executor.get_opt_apis();
 			for hash in transaction_hashes {
 				let _ = apis
 					.transactions
@@ -483,21 +437,27 @@ mod tests {
 			}
 		}
 
+		background_handle.abort();
 		Ok(())
 	}
 
 	#[tokio::test]
 	async fn test_set_finalized_block_height_get_fin_api() -> Result<(), anyhow::Error> {
 		// Create an executor instance from the environment configuration.
-		let (tx, _rx) = async_channel::unbounded::<SignedTransaction>();
 		let config = Config::default();
-		let chain_config = config.chain.clone();
-		let executor = Executor::try_from_config(tx, config)?;
+		let (tx_sender, _tx_receiver) = mpsc::channel(16);
+		let (executor, background) = Executor::try_from_config(tx_sender, config.clone())?;
+		let services = executor.services();
+
+		// Retrieve the executor's fin API instance
+		let apis = services.get_fin_apis();
+
+		let background_handle = tokio::spawn(background);
 
 		// Initialize a root account using a predefined keypair and the test root address.
 		let root_account = LocalAccount::new(
 			aptos_test_root_address(),
-			AccountKey::from_private_key(chain_config.maptos_private_key),
+			AccountKey::from_private_key(config.chain.maptos_private_key),
 			0,
 		);
 
@@ -506,7 +466,7 @@ mod tests {
 		let mut rng = ::rand::rngs::StdRng::from_seed(seed);
 
 		// Create a transaction factory with the chain ID of the executor.
-		let tx_factory = TransactionFactory::new(chain_config.maptos_chain_id);
+		let tx_factory = TransactionFactory::new(config.chain.maptos_chain_id);
 		let mut transaction_hashes = Vec::new();
 
 		// Simulate the execution of multiple blocks.
@@ -542,9 +502,6 @@ mod tests {
 		// Set the fin height
 		executor.set_finalized_block_height(2)?;
 
-		// Retrieve the executor's fin API instance
-		let apis = executor.get_fin_apis();
-
 		// Fetch the transaction in block 2
 		let _ = apis
 			.transactions
@@ -559,6 +516,8 @@ mod tests {
 		let opt =
 			context.get_transaction_by_hash(transaction_hashes[2].into(), ledger_info.version())?;
 		assert!(opt.is_none(), "transaction from opt block is found in the fin view");
+
+		background_handle.abort();
 
 		Ok(())
 	}
