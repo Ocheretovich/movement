@@ -116,6 +116,7 @@ impl Executor {
 		let transaction_pipe = TransactionPipe::new(
 			mempool_client_receiver,
 			transaction_sender,
+			self.db.reader.clone(),
 			&node_config,
 			Arc::clone(&self.transactions_in_flight),
 		);

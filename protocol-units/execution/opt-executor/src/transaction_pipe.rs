@@ -5,13 +5,13 @@ use aptos_mempool::core_mempool::CoreMempool;
 use aptos_mempool::SubmissionStatus;
 use aptos_mempool::{core_mempool::TimelineState, MempoolClientRequest};
 use aptos_sdk::types::mempool_status::{MempoolStatus, MempoolStatusCode};
+use aptos_storage_interface::DbReader;
 use aptos_types::transaction::SignedTransaction;
 use aptos_vm_validator::vm_validator::TransactionValidation;
 use aptos_vm_validator::vm_validator::VMValidator;
 
 use futures::channel::mpsc as futures_mpsc;
 use futures::StreamExt;
-use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tracing::{debug, info, info_span, warn, Instrument};
@@ -45,6 +45,8 @@ pub struct TransactionPipe {
 	mempool_client_receiver: futures_mpsc::Receiver<MempoolClientRequest>,
 	// Sender for the channel with accepted transactions.
 	transaction_sender: mpsc::Sender<SignedTransaction>,
+	// Access to the ledger DB. TODO: reuse an instance of VMValidator
+	db_reader: Arc<dyn DbReader>,
 	// State of the Aptos mempool
 	core_mempool: CoreMempool,
 	// Shared reference on the counter of transactions in flight.
@@ -57,12 +59,14 @@ impl TransactionPipe {
 	pub(crate) fn new(
 		mempool_client_receiver: futures_mpsc::Receiver<MempoolClientRequest>,
 		transaction_sender: mpsc::Sender<SignedTransaction>,
+		db_reader: Arc<dyn DbReader>,
 		node_config: &NodeConfig,
 		transactions_in_flight: Arc<AtomicU64>,
 	) -> Self {
 		TransactionPipe {
 			mempool_client_receiver,
 			transaction_sender,
+			db_reader,
 			core_mempool: CoreMempool::new(node_config),
 			transactions_in_flight,
 			last_gc: Instant::now(),
@@ -133,7 +137,7 @@ impl TransactionPipe {
 
 		// Pre-execute Tx to validate its content.
 		// Re-create the validator for each Tx because it uses a frozen version of the ledger.
-		let vm_validator = VMValidator::new(Arc::clone(&self.db.reader));
+		let vm_validator = VMValidator::new(Arc::clone(&self.db_reader));
 		let tx_result = vm_validator.validate_transaction(transaction.clone())?;
 		match tx_result.status() {
 			Some(_) => {
@@ -159,14 +163,15 @@ impl TransactionPipe {
 		match status.code {
 			MempoolStatusCode::Accepted => {
 				debug!("Transaction accepted: {:?}", transaction);
+				let sender = transaction.sender();
+				let sequence_number = transaction.sequence_number();
 				self.transaction_sender
 					.send(transaction)
 					.await
 					.map_err(|e| anyhow::anyhow!("Error sending transaction: {:?}", e))?;
 				// increment transactions in flight
 				self.transactions_in_flight.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-				core_mempool
-					.commit_transaction(&transaction.sender(), transaction.sequence_number());
+				self.core_mempool.commit_transaction(&sender, sequence_number);
 			}
 			_ => {
 				warn!("Transaction not accepted: {:?}", status);
@@ -196,18 +201,10 @@ mod tests {
 	use maptos_execution_util::config::chain::Config;
 
 	fn setup() -> (TransactionPipe, MempoolClientSender, mpsc::Receiver<SignedTransaction>) {
-		// use the default signer, block executor, and mempool
-		let (mempool_client_sender, mempool_client_receiver) =
-			futures_mpsc::channel::<MempoolClientRequest>(2 ^ 16); // allow 2^16 transactions before apply backpressure given theoretical maximum TPS of 170k
 		let (tx_sender, tx_receiver) = mpsc::channel(16);
-		let node_config = NodeConfig::default();
-		let transaction_pipe = TransactionPipe::new(
-			mempool_client_receiver,
-			tx_sender,
-			&node_config,
-			Arc::new(AtomicU64::new(0)),
-		);
-		(transaction_pipe, mempool_client_sender, tx_receiver)
+		let (_, context, transaction_pipe, _tempdir) =
+			Executor::try_test_default(tx_sender, GENESIS_KEYPAIR.0.clone()).unwrap();
+		(transaction_pipe, context.mempool_client_sender(), tx_receiver)
 	}
 
 	fn create_signed_transaction(sequence_number: u64, chain_config: &Config) -> SignedTransaction {
