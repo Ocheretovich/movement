@@ -6,9 +6,12 @@ use aptos_mempool::SubmissionStatus;
 use aptos_mempool::{core_mempool::TimelineState, MempoolClientRequest};
 use aptos_sdk::types::mempool_status::{MempoolStatus, MempoolStatusCode};
 use aptos_types::transaction::SignedTransaction;
+use aptos_vm_validator::vm_validator::TransactionValidation;
+use aptos_vm_validator::vm_validator::VMValidator;
 
 use futures::channel::mpsc as futures_mpsc;
 use futures::StreamExt;
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tracing::{debug, info, info_span, warn, Instrument};
@@ -18,7 +21,7 @@ use std::time::{Duration, Instant};
 
 const IN_FLIGHT_LIMIT: u64 = 2u64.pow(16);
 
-const GC_INTERVAL: Duration = Duration::from_secs(30);
+const GC_INTERVAL: Duration = Duration::from_secs(120);
 
 /// Domain error for the transaction pipe task
 #[derive(Debug, Clone, Error)]
@@ -130,14 +133,15 @@ impl TransactionPipe {
 
 		// Pre-execute Tx to validate its content.
 		// Re-create the validator for each Tx because it uses a frozen version of the ledger.
-		// let vm_validator = VMValidator::new(Arc::clone(&self.db.reader));
-		// let tx_result = vm_validator.validate_transaction(transaction.clone())?;
-
-		// let status = if let Some(vm_status) = tx_result.status() {
-		// 	// If the verification failed, return the error status.
-		// 	let ms = MempoolStatus::new(MempoolStatusCode::VmError);
-		// 	(ms, Some(vm_status))
-		// } else {
+		let vm_validator = VMValidator::new(Arc::clone(&self.db.reader));
+		let tx_result = vm_validator.validate_transaction(transaction.clone())?;
+		match tx_result.status() {
+			Some(_) => {
+				let ms = MempoolStatus::new(MempoolStatusCode::VmError);
+				return Ok((ms, tx_result.status()));
+			}
+			None => {}
+		}
 
 		debug!(
 			"Adding transaction to mempool: {:?} {:?}",
@@ -161,6 +165,8 @@ impl TransactionPipe {
 					.map_err(|e| anyhow::anyhow!("Error sending transaction: {:?}", e))?;
 				// increment transactions in flight
 				self.transactions_in_flight.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+				core_mempool
+					.commit_transaction(&transaction.sender(), transaction.sequence_number());
 			}
 			_ => {
 				warn!("Transaction not accepted: {:?}", status);
