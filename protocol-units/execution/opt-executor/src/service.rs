@@ -7,9 +7,11 @@ use aptos_api::{
 };
 use aptos_storage_interface::DbReaderWriter;
 
+use futures::prelude::*;
 use poem::{http::Method, listener::TcpListener, middleware::Cors, EndpointExt, Route, Server};
 use tracing::info;
 
+use std::future::Future;
 use std::sync::Arc;
 
 pub struct Service {
@@ -22,13 +24,13 @@ pub struct Service {
 impl Service {
 	pub fn new(cx: &Context) -> Self {
 		let Context {
-			chain_config,
 			db: DbReaderWriter { reader, .. },
 			mempool_client_sender,
+			maptos_config,
 			node_config,
 		} = cx;
 		let context = Arc::new(aptos_api::Context::new(
-			chain_config.maptos_chain_id.clone(),
+			maptos_config.chain.maptos_chain_id.clone(),
 			reader.clone(),
 			mempool_client_sender.clone(),
 			node_config.clone(),
@@ -36,7 +38,8 @@ impl Service {
 		));
 		let listen_url = format!(
 			"{}:{}",
-			chain_config.maptos_rest_listen_hostname, chain_config.maptos_rest_listen_port
+			maptos_config.chain.maptos_rest_listen_hostname,
+			maptos_config.chain.maptos_rest_listen_port
 		);
 		Service { context, listen_url }
 	}
@@ -49,7 +52,7 @@ impl Service {
 		get_apis(self.context())
 	}
 
-	pub async fn run(&self) -> Result<(), anyhow::Error> {
+	pub fn run(&self) -> impl Future<Output = Result<(), anyhow::Error>> + Send {
 		info!("Starting maptos-opt-executor services at: {:?}", self.listen_url);
 
 		let api_service =
@@ -63,6 +66,7 @@ impl Service {
 		let cors = Cors::new()
 			.allow_methods(vec![Method::GET, Method::POST])
 			.allow_credentials(true);
+		let listener = TcpListener::bind(self.listen_url.clone());
 		let app = Route::new()
 			.at("/", poem::get(root_handler))
 			.nest("/v1", api_service)
@@ -75,12 +79,9 @@ impl Service {
 			)
 			.with(cors);
 
-		Server::new(TcpListener::bind(&self.listen_url))
+		Server::new(listener)
 			.run(app)
-			.await
-			.map_err(|e| anyhow::anyhow!("Server error: {:?}", e))?;
-
-		Ok(())
+			.map_err(|e| anyhow::anyhow!("Server error: {:?}", e))
 	}
 }
 
@@ -118,7 +119,7 @@ mod tests {
 		let service = Service::new(&context);
 		let handle = tokio::spawn(async move { service.run().await });
 
-		let user_transaction = create_signed_transaction(0, context.chain_config());
+		let user_transaction = create_signed_transaction(0, &context.config().chain);
 
 		// send transaction to mempool
 		let (req_sender, callback) = oneshot::channel();

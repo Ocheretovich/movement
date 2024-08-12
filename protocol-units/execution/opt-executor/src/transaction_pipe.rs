@@ -321,7 +321,7 @@ mod tests {
 		});
 
 		let api = service.get_apis();
-		let user_transaction = create_signed_transaction(1, context.chain_config());
+		let user_transaction = create_signed_transaction(1, &context.config().chain);
 		let comparison_user_transaction = user_transaction.clone();
 		let bcs_user_transaction = bcs::to_bytes(&user_transaction)?;
 		let request = SubmitTransactionPost::Bcs(aptos_api::bcs_payload::Bcs(bcs_user_transaction));
@@ -353,7 +353,7 @@ mod tests {
 		let mut user_transactions = BTreeSet::new();
 		let mut comparison_user_transactions = BTreeSet::new();
 		for i in 1..25 {
-			let user_transaction = create_signed_transaction(i, context.chain_config());
+			let user_transaction = create_signed_transaction(i, &context.config().chain);
 			let bcs_user_transaction = bcs::to_bytes(&user_transaction)?;
 			user_transactions.insert(bcs_user_transaction.clone());
 

@@ -23,7 +23,7 @@ impl Context {
 		// bootstrap table info
 		let (_table_info_runtime, _async_indexer) = bootstrap_table_info(
 			&self.node_config,
-			self.chain_config.maptos_chain_id.clone(),
+			self.maptos_config.chain.maptos_chain_id.clone(),
 			self.db.clone(),
 			self.mempool_client_sender.clone(),
 		)
@@ -33,7 +33,7 @@ impl Context {
 		// this one actually serves the gRPC service
 		let _indexer_grpc = bootstrap_indexer_grpc(
 			&self.node_config,
-			self.chain_config.maptos_chain_id.clone(),
+			self.maptos_config.chain.maptos_chain_id.clone(),
 			self.db.reader.clone(),
 			self.mempool_client_sender.clone(),
 			None,
@@ -43,7 +43,7 @@ impl Context {
 		// bootstrap indexer stream
 		let _indexer_stream = bootstrap_indexer_stream(
 			&self.node_config,
-			self.chain_config.maptos_chain_id.clone(),
+			self.maptos_config.chain.maptos_chain_id.clone(),
 			self.db.reader.clone(),
 			self.mempool_client_sender.clone(),
 		)

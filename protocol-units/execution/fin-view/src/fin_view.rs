@@ -1,14 +1,9 @@
-use aptos_api::{
-	runtime::{get_api_service, get_apis, Apis},
-	Context,
-};
+use crate::Service;
+use aptos_api::Context;
 use aptos_config::config::NodeConfig;
 use aptos_mempool::MempoolClientSender;
 use aptos_storage_interface::{finality_view::FinalityView as AptosFinalityView, DbReader};
 use maptos_execution_util::config::Config;
-
-use poem::{http::Method, listener::TcpListener, middleware::Cors, EndpointExt, Route, Server};
-use tracing::info;
 
 use std::sync::Arc;
 
@@ -25,18 +20,24 @@ impl FinalityView {
 	}
 
 	/// Instantiate the API service for this finality view.
-	pub fn service(&self, mempool_client_sender: MempoolClientSender, config: &Config) -> Service {
-		let node_config = NodeConfig::default();
+	pub fn service(
+		&self,
+		mempool_client_sender: MempoolClientSender,
+		maptos_config: &Config,
+		node_config: NodeConfig,
+	) -> Service {
 		let context = Arc::new(Context::new(
-			config.chain.maptos_chain_id,
+			maptos_config.chain.maptos_chain_id,
 			self.inner.clone(),
 			mempool_client_sender,
 			node_config,
 			None,
 		));
-		let listen_url =
-			format!("{}:{}", config.fin.fin_rest_listen_hostname, config.fin.fin_rest_listen_port,);
-		Service { context, listen_url }
+		let listen_url = format!(
+			"{}:{}",
+			maptos_config.fin.fin_rest_listen_hostname, maptos_config.fin.fin_rest_listen_port,
+		);
+		Service::new(context, listen_url)
 	}
 
 	/// Retrieve the finalized block height.
@@ -52,39 +53,6 @@ impl FinalityView {
 	/// The block must be found on the committed chain.
 	pub fn set_finalized_block_height(&self, height: u64) -> Result<(), anyhow::Error> {
 		self.inner.set_finalized_block_height(height)?;
-		Ok(())
-	}
-}
-
-/// The API service for the finality view.
-pub struct Service {
-	context: Arc<Context>,
-	listen_url: String,
-}
-
-impl Service {
-	pub fn get_apis(&self) -> Apis {
-		get_apis(self.context.clone())
-	}
-
-	pub async fn run(&self) -> Result<(), anyhow::Error> {
-		info!("Starting maptos-fin-view services at: {:?}", self.listen_url);
-
-		let api_service =
-			get_api_service(self.context.clone()).server(format!("http://{:?}", self.listen_url));
-
-		let ui = api_service.swagger_ui();
-
-		let cors = Cors::new()
-			.allow_methods(vec![Method::GET, Method::POST])
-			.allow_credentials(true);
-		let app = Route::new().nest("/v1", api_service).nest("/spec", ui).with(cors);
-
-		Server::new(TcpListener::bind(self.listen_url.clone()))
-			.run(app)
-			.await
-			.map_err(|e| anyhow::anyhow!("Server error: {:?}", e))?;
-
 		Ok(())
 	}
 }
@@ -109,14 +77,18 @@ mod tests {
 		// Create an Executor and a FinalityView instance from the environment configuration.
 		let config = Config::default();
 		let (tx_sender, _tx_receiver) = mpsc::channel(16);
-		let (executor, context, _transaction_pipe) = Executor::try_from_config(tx_sender, &config)?;
+		let (executor, context, _transaction_pipe) = Executor::try_from_config(tx_sender, config)?;
 		let finality_view = FinalityView::new(context.db_reader());
-		let service = finality_view.service(context.mempool_client_sender(), &config);
+		let service = finality_view.service(
+			context.mempool_client_sender(),
+			&context.config(),
+			context.node_config().clone(),
+		);
 
 		// Initialize a root account using a predefined keypair and the test root address.
 		let root_account = LocalAccount::new(
 			aptos_test_root_address(),
-			AccountKey::from_private_key(config.chain.maptos_private_key.clone()),
+			AccountKey::from_private_key(context.config().chain.maptos_private_key.clone()),
 			0,
 		);
 
@@ -125,7 +97,7 @@ mod tests {
 		let mut rng = ::rand::rngs::StdRng::from_seed(seed);
 
 		// Create a transaction factory with the chain ID of the executor.
-		let tx_factory = TransactionFactory::new(config.chain.maptos_chain_id.clone());
+		let tx_factory = TransactionFactory::new(context.config().chain.maptos_chain_id.clone());
 
 		let mut account_addrs = Vec::new();
 

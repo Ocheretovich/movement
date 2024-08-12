@@ -1,7 +1,7 @@
 use aptos_config::config::NodeConfig;
 use aptos_mempool::MempoolClientSender;
 use aptos_storage_interface::{DbReader, DbReaderWriter};
-use maptos_execution_util::config::chain::Config as ChainConfig;
+use maptos_execution_util::config::Config;
 
 use std::sync::Arc;
 
@@ -9,7 +9,7 @@ use std::sync::Arc;
 pub struct Context {
 	pub(crate) db: DbReaderWriter,
 	pub(crate) mempool_client_sender: MempoolClientSender,
-	pub(crate) chain_config: ChainConfig,
+	pub(crate) maptos_config: Config,
 	pub(crate) node_config: NodeConfig,
 }
 
@@ -17,10 +17,10 @@ impl Context {
 	pub(crate) fn new(
 		db: DbReaderWriter,
 		mempool_client_sender: MempoolClientSender,
-		chain_config: ChainConfig,
+		maptos_config: Config,
 		node_config: NodeConfig,
 	) -> Self {
-		Context { db, mempool_client_sender, chain_config, node_config }
+		Context { db, mempool_client_sender, maptos_config, node_config }
 	}
 
 	/// Returns a reference on the data store reader.
@@ -33,7 +33,11 @@ impl Context {
 		self.mempool_client_sender.clone()
 	}
 
-	pub fn chain_config(&self) -> &ChainConfig {
-		&self.chain_config
+	pub fn config(&self) -> &Config {
+		&self.maptos_config
+	}
+
+	pub fn node_config(&self) -> &NodeConfig {
+		&self.node_config
 	}
 }

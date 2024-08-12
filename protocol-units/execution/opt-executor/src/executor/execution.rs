@@ -277,7 +277,7 @@ mod tests {
 			chrono::Utc::now().timestamp_micros() as u64,
 		));
 		let tx = SignatureVerifiedTransaction::Valid(Transaction::UserTransaction(
-			create_signed_transaction(0, context.chain_config().maptos_chain_id.clone()),
+			create_signed_transaction(0, context.config().chain.maptos_chain_id.clone()),
 		));
 		let txs = ExecutableTransactions::Unsharded(vec![
 			SignatureVerifiedTransaction::Valid(block_metadata),
@@ -305,7 +305,7 @@ mod tests {
 		// Initialize a root account using a predefined keypair and the test root address.
 		let root_account = LocalAccount::new(
 			aptos_test_root_address(),
-			AccountKey::from_private_key(context.chain_config().maptos_private_key.clone()),
+			AccountKey::from_private_key(context.config().chain.maptos_private_key.clone()),
 			0,
 		);
 
@@ -326,7 +326,7 @@ mod tests {
 
 			// Create a transaction factory with the chain ID of the executor, used for creating transactions.
 			let tx_factory =
-				TransactionFactory::new(context.chain_config().maptos_chain_id.clone())
+				TransactionFactory::new(context.config().chain.maptos_chain_id.clone())
 					.with_transaction_expiration_time(
 						current_time_microseconds, // current_time_microseconds + (i * 1000 * 1000 * 60 * 30) + 30,
 					);
@@ -408,7 +408,7 @@ mod tests {
 		// Initialize a root account using a predefined keypair and the test root address.
 		let root_account = LocalAccount::new(
 			aptos_test_root_address(),
-			AccountKey::from_private_key(context.chain_config().maptos_private_key.clone()),
+			AccountKey::from_private_key(context.config().chain.maptos_private_key.clone()),
 			0,
 		);
 
@@ -417,7 +417,7 @@ mod tests {
 		let mut rng = ::rand::rngs::StdRng::from_seed(seed);
 
 		// Create a transaction factory with the chain ID of the executor.
-		let tx_factory = TransactionFactory::new(context.chain_config().maptos_chain_id.clone());
+		let tx_factory = TransactionFactory::new(context.config().chain.maptos_chain_id.clone());
 
 		// Simulate the execution of multiple blocks.
 		for _ in 0..10 {
