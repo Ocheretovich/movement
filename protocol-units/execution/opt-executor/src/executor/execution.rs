@@ -105,7 +105,7 @@ impl Executor {
 		Ok(new_block_event.height)
 	}
 
-	pub fn revert_block_head_to(&self, block_height: u64) -> Result<(), anyhow::Error> {
+	pub async fn revert_block_head_to(&self, block_height: u64) -> Result<(), anyhow::Error> {
 		let (_start_ver, end_ver, block_event) =
 			self.db.reader.get_block_info_by_height(block_height)?;
 		let block_info = BlockInfo::new(
@@ -120,7 +120,8 @@ impl Executor {
 		let ledger_info = LedgerInfo::new(block_info, HashValue::zero());
 		let aggregate_signature = AggregateSignature::empty();
 		let ledger_info = LedgerInfoWithSignatures::new(ledger_info, aggregate_signature);
-		self.db.writer.revert_commit(&ledger_info)?;
+		let db_writer = self.db.writer.clone();
+		tokio::task::spawn_blocking(move || db_writer.revert_commit(&ledger_info)).await??;
 		// Reset the executor state to the reverted storage
 		self.block_executor.reset()?;
 		Ok(())

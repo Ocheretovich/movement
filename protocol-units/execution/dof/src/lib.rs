@@ -25,7 +25,7 @@ pub trait DynOptFinExecutor {
 	fn set_finalized_block_height(&self, block_height: u64) -> Result<(), anyhow::Error>;
 
 	/// Revert the chain to the specified height
-	fn revert_block_head_to(&self, block_height: u64) -> Result<(), anyhow::Error>;
+	async fn revert_block_head_to(&self, block_height: u64) -> Result<(), anyhow::Error>;
 
 	/// Get block head height.
 	fn get_block_head_height(&self) -> Result<u64, anyhow::Error>;
