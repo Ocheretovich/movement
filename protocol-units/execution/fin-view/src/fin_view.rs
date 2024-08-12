@@ -103,7 +103,7 @@ mod tests {
 
 		// Simulate the execution of multiple blocks.
 		for _ in 0..3 {
-			let (epoch, round) = executor.get_next_epoch_and_round().await?;
+			let (epoch, round) = executor.get_next_epoch_and_round()?;
 
 			let block_id = HashValue::random(); // Generate a random block ID for each block.
 

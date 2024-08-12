@@ -127,24 +127,24 @@ impl Executor {
 	}
 
 	/// Gets the next epoch and round.
-	pub async fn get_next_epoch_and_round(&self) -> Result<(u64, u64), anyhow::Error> {
+	pub fn get_next_epoch_and_round(&self) -> Result<(u64, u64), anyhow::Error> {
 		let epoch = self.db.reader.get_latest_ledger_info()?.ledger_info().next_block_epoch();
 		let round = self.db.reader.get_latest_ledger_info()?.ledger_info().round();
 		Ok((epoch, round))
 	}
 
 	/// Gets the timestamp of the last state.
-	pub async fn get_last_state_timestamp_micros(&self) -> Result<u64, anyhow::Error> {
+	pub fn get_last_state_timestamp_micros(&self) -> Result<u64, anyhow::Error> {
 		let ledger_info = self.db.reader.get_latest_ledger_info()?;
 		Ok(ledger_info.ledger_info().timestamp_usecs())
 	}
 
 	pub async fn rollover_genesis(&self, timestamp: u64) -> Result<(), anyhow::Error> {
-		let (epoch, round) = self.get_next_epoch_and_round().await?;
+		let (epoch, round) = self.get_next_epoch_and_round()?;
 		let block_id = HashValue::random();
 
 		// genesis timestamp should always be 0
-		let genesis_timestamp = self.get_last_state_timestamp_micros().await?;
+		let genesis_timestamp = self.get_last_state_timestamp_micros()?;
 		info!(
 			"Rollover genesis: epoch: {}, round: {}, block_id: {}, genesis timestamp {}",
 			epoch, round, block_id, genesis_timestamp
@@ -315,7 +315,7 @@ mod tests {
 
 		// Loop to simulate the execution of multiple blocks.
 		for i in 0..10 {
-			let (epoch, round) = executor.get_next_epoch_and_round().await?;
+			let (epoch, round) = executor.get_next_epoch_and_round()?;
 
 			// Generate a random block ID.
 			let block_id = HashValue::random();
@@ -422,7 +422,7 @@ mod tests {
 		// Simulate the execution of multiple blocks.
 		for _ in 0..10 {
 			// For example, create and execute 3 blocks.
-			let (epoch, round) = executor.get_next_epoch_and_round().await?;
+			let (epoch, round) = executor.get_next_epoch_and_round()?;
 
 			let block_id = HashValue::random(); // Generate a random block ID for each block.
 

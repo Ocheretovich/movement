@@ -84,17 +84,17 @@ impl DynOptFinExecutor for Executor {
 	}
 
 	/// Get block head height.
-	async fn get_block_head_height(&self) -> Result<u64, anyhow::Error> {
+	fn get_block_head_height(&self) -> Result<u64, anyhow::Error> {
 		self.executor.get_block_head_height()
 	}
 
 	/// Build block metadata for a timestamp
-	async fn build_block_metadata(
+	fn build_block_metadata(
 		&self,
 		block_id: HashValue,
 		timestamp: u64,
 	) -> Result<BlockMetadata, anyhow::Error> {
-		let (epoch, round) = self.executor.get_next_epoch_and_round().await?;
+		let (epoch, round) = self.executor.get_next_epoch_and_round()?;
 		let signer = &self.executor.signer;
 
 		// Create a block metadata transaction.
@@ -182,7 +182,6 @@ mod tests {
 		let block_id = HashValue::random();
 		let block_metadata = executor
 			.build_block_metadata(block_id.clone(), chrono::Utc::now().timestamp_micros() as u64)
-			.await
 			.unwrap();
 		let txs = ExecutableTransactions::Unsharded(
 			[
@@ -251,7 +250,6 @@ mod tests {
 		let block_id = HashValue::random();
 		let block_metadata = executor
 			.build_block_metadata(block_id.clone(), chrono::Utc::now().timestamp_micros() as u64)
-			.await
 			.unwrap();
 		let txs = ExecutableTransactions::Unsharded(
 			[
@@ -322,7 +320,6 @@ mod tests {
 					block_id.clone(),
 					chrono::Utc::now().timestamp_micros() as u64,
 				)
-				.await
 				.unwrap();
 			let txs = ExecutableTransactions::Unsharded(
 				[
@@ -403,7 +400,6 @@ mod tests {
 					block_id.clone(),
 					chrono::Utc::now().timestamp_micros() as u64,
 				)
-				.await
 				.unwrap();
 
 			// Generate new accounts and create transactions for each block.
@@ -477,7 +473,6 @@ mod tests {
 					block_id.clone(),
 					chrono::Utc::now().timestamp_micros() as u64,
 				)
-				.await
 				.unwrap();
 
 			// Generate new accounts and create a transaction for each block.

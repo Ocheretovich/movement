@@ -28,10 +28,10 @@ pub trait DynOptFinExecutor {
 	fn revert_block_head_to(&self, block_height: u64) -> Result<(), anyhow::Error>;
 
 	/// Get block head height.
-	async fn get_block_head_height(&self) -> Result<u64, anyhow::Error>;
+	fn get_block_head_height(&self) -> Result<u64, anyhow::Error>;
 
 	/// Build block metadata for a timestamp
-	async fn build_block_metadata(
+	fn build_block_metadata(
 		&self,
 		block_id: HashValue,
 		timestamp: u64,
