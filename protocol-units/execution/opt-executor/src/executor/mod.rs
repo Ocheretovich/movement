@@ -4,7 +4,7 @@ pub mod execution;
 pub mod initialization;
 
 use aptos_executor::block_executor::BlockExecutor;
-use aptos_storage_interface::DbReaderWriter;
+use aptos_storage_interface::{DbReader, DbReaderWriter};
 use aptos_types::validator_signer::ValidatorSigner;
 use aptos_vm::AptosVM;
 
@@ -18,8 +18,6 @@ use std::sync::Arc;
 pub struct Executor {
 	/// The executing type.
 	pub block_executor: Arc<BlockExecutor<AptosVM>>,
-	/// The access to db.
-	pub db: DbReaderWriter,
 	/// The signer of the executor's transactions.
 	pub signer: ValidatorSigner,
 	// Shared reference on the counter of transactions in flight.
@@ -27,6 +25,14 @@ pub struct Executor {
 }
 
 impl Executor {
+	fn db(&self) -> &DbReaderWriter {
+		&self.block_executor.db
+	}
+
+	pub fn db_reader(&self) -> Arc<dyn DbReader> {
+		Arc::clone(&self.db().reader)
+	}
+
 	pub fn decrement_transactions_in_flight(&self, count: u64) {
 		// fetch sub mind the underflow
 		// a semaphore might be better here as this will rerun until the value does not change during the operation

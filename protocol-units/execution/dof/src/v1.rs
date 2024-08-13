@@ -1,65 +1,77 @@
-use crate::{BlockMetadata, DynOptFinExecutor, ExecutableBlock, HashValue, SignedTransaction};
-use aptos_api::runtime::Apis;
+use crate::{
+	BlockMetadata, DynOptFinExecutor, ExecutableBlock, HashValue, MakeOptFinServices, Services,
+	SignedTransaction,
+};
 use maptos_execution_util::config::Config;
 use maptos_fin_view::FinalityView;
-use maptos_opt_executor::{Context as ExecutorContext, Executor as OptExecutor, TransactionPipe};
+use maptos_opt_executor::{Context as OptContext, Executor as OptExecutor};
 use movement_types::BlockCommitment;
 
 use anyhow::format_err;
 use async_trait::async_trait;
 use tokio::sync::mpsc::Sender;
-use tokio::try_join;
 use tracing::debug;
 
 use std::future::Future;
 
 pub struct Executor {
-	pub executor: OptExecutor,
-	context: ExecutorContext,
+	executor: OptExecutor,
 	finality_view: FinalityView,
 }
 
-pub struct Services {
-	opt: maptos_opt_executor::Service,
-	fin: maptos_fin_view::Service,
+pub struct Context {
+	opt_context: OptContext,
+	fin_service: maptos_fin_view::Service,
 }
 
 impl Executor {
-	pub fn new(
-		executor: OptExecutor,
-		context: ExecutorContext,
-		transaction_pipe: TransactionPipe,
-	) -> (Self, impl Future<Output = Result<(), anyhow::Error>> + Send) {
-		let finality_view = FinalityView::new(context.db_reader());
-		let background = async move {
-			transaction_pipe.run().await?;
-			Ok(())
-		};
-		(Self { executor, context, finality_view }, background)
+	/// Creates the execution state with the optimistic executor
+	/// and the finality view, joined at the hip by shared storage.
+	pub fn new(executor: OptExecutor) -> Self {
+		let finality_view = FinalityView::new(executor.db_reader());
+		Self { executor, finality_view }
 	}
 
-	pub fn try_from_config(
-		transaction_sender: Sender<SignedTransaction>,
-		config: Config,
-	) -> Result<(Self, impl Future<Output = Result<(), anyhow::Error>> + Send), anyhow::Error> {
-		let (executor, context, transaction_pipe) =
-			OptExecutor::try_from_config(transaction_sender, config)?;
-		Ok(Self::new(executor, context, transaction_pipe))
+	pub fn try_from_config(config: &Config) -> Result<Self, anyhow::Error> {
+		let executor = OptExecutor::try_from_config(config)?;
+		Ok(Self::new(executor))
 	}
+}
 
-	pub fn services(&self) -> Services {
-		let opt = maptos_opt_executor::Service::new(&self.context);
-		let fin = self.finality_view.service(
-			self.context.mempool_client_sender(),
-			self.context.config(),
-			self.context.node_config().clone(),
-		);
-		Services { opt, fin }
+impl MakeOptFinServices for Context {
+	fn services(&self) -> Services {
+		let opt = maptos_opt_executor::Service::new(&self.opt_context);
+		let fin = self.fin_service.clone();
+		Services::new(opt, fin)
 	}
 }
 
 #[async_trait]
 impl DynOptFinExecutor for Executor {
+	type Context = Context;
+
+	fn background(
+		&self,
+		transaction_sender: Sender<SignedTransaction>,
+		config: &Config,
+	) -> Result<
+		(Context, impl Future<Output = Result<(), anyhow::Error>> + Send + 'static),
+		anyhow::Error,
+	> {
+		let (opt_context, transaction_pipe) =
+			self.executor.background(transaction_sender, config)?;
+		let fin_service = self.finality_view.service(
+			opt_context.mempool_client_sender(),
+			config,
+			opt_context.node_config().clone(),
+		);
+		let background = async move {
+			transaction_pipe.run().await?;
+			Ok(())
+		};
+		Ok((Context { opt_context, fin_service }, background))
+	}
+
 	async fn execute_block_opt(
 		&self,
 		block: ExecutableBlock,
@@ -111,22 +123,6 @@ impl DynOptFinExecutor for Executor {
 	}
 }
 
-impl Services {
-	pub fn get_opt_apis(&self) -> Apis {
-		self.opt.get_apis()
-	}
-
-	pub fn get_fin_apis(&self) -> Apis {
-		self.fin.get_apis()
-	}
-
-	pub async fn run(self) -> anyhow::Result<()> {
-		let (opt_res, fin_res) =
-			try_join!(tokio::spawn(self.opt.run()), tokio::spawn(self.fin.run()))?;
-		opt_res.and(fin_res)
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -145,7 +141,6 @@ mod tests {
 		account_config::aptos_test_root_address,
 		block_executor::partitioner::ExecutableTransactions,
 		chain_id::ChainId,
-		ledger_info::LedgerInfoWithSignatures,
 		transaction::{
 			signature_verified_transaction::SignatureVerifiedTransaction, RawTransaction, Script,
 			SignedTransaction, Transaction, TransactionPayload, Version,
@@ -177,8 +172,7 @@ mod tests {
 	#[tokio::test]
 	async fn test_execute_opt_block() -> Result<(), anyhow::Error> {
 		let config = Config::default();
-		let (tx, _rx) = mpsc::channel(16);
-		let (executor, _background) = Executor::try_from_config(tx, config)?;
+		let executor = Executor::try_from_config(&config)?;
 		let block_id = HashValue::random();
 		let block_metadata = executor
 			.build_block_metadata(block_id.clone(), chrono::Utc::now().timestamp_micros() as u64)
@@ -201,8 +195,9 @@ mod tests {
 	async fn test_pipe_transactions_from_api() -> Result<(), anyhow::Error> {
 		let config = Config::default();
 		let (tx_sender, mut tx_receiver) = mpsc::channel(16);
-		let (executor, background) = Executor::try_from_config(tx_sender, config)?;
-		let services = executor.services();
+		let executor = Executor::try_from_config(&config)?;
+		let (context, background) = executor.background(tx_sender, &config)?;
+		let services = context.services();
 		let api = services.get_opt_apis();
 
 		let services_handle = tokio::spawn(services.run());
@@ -228,8 +223,9 @@ mod tests {
 	async fn test_pipe_transactions_from_api_and_execute() -> Result<(), anyhow::Error> {
 		let config = Config::default();
 		let (tx_sender, mut tx_receiver) = mpsc::channel(16);
-		let (executor, background) = Executor::try_from_config(tx_sender, config)?;
-		let services = executor.services();
+		let executor = Executor::try_from_config(&config)?;
+		let (context, background) = executor.background(tx_sender, &config)?;
+		let services = context.services();
 		let api = services.get_opt_apis();
 
 		let services_handle = tokio::spawn(services.run());
@@ -279,14 +275,14 @@ mod tests {
 
 		#[derive(Debug)]
 		struct Commit {
-			info: LedgerInfoWithSignatures,
 			current_version: Version,
 		}
 
 		let config = Config::default();
 		let (tx_sender, mut tx_receiver) = mpsc::channel(16);
-		let (executor, background) = Executor::try_from_config(tx_sender, config)?;
-		let services = executor.services();
+		let executor = Executor::try_from_config(&config)?;
+		let (context, background) = executor.background(tx_sender, &config)?;
+		let services = context.services();
 		let api = services.get_opt_apis();
 
 		let services_handle = tokio::spawn(services.run());
@@ -301,7 +297,7 @@ mod tests {
 		let mut current_version: Version = 0;
 		let mut commit_versions = vec![];
 
-		for (txns_to_commit, ledger_info_with_sigs) in &blocks {
+		for (txns_to_commit, _ledger_info_with_sigs) in &blocks {
 			let user_transaction = create_signed_transaction(0);
 			let comparison_user_transaction = user_transaction.clone();
 			let bcs_user_transaction = bcs::to_bytes(&user_transaction)?;
@@ -335,10 +331,7 @@ mod tests {
 
 			blockheight += 1;
 			current_version += txns_to_commit.len() as u64;
-			committed_blocks.insert(
-				blockheight,
-				Commit { info: ledger_info_with_sigs.clone(), current_version },
-			);
+			committed_blocks.insert(blockheight, Commit { current_version });
 			commit_versions.push(current_version);
 			//blockheight += 1;
 		}
@@ -350,13 +343,10 @@ mod tests {
 		// Get the version to revert to
 		let version_to_revert_to = revert.current_version;
 
-		{
-			let db_writer = executor.executor.db.writer.clone();
-			db_writer.revert_commit(&revert.info)?;
-		}
+		executor.revert_block_head_to(version_to_revert_to).await?;
 
 		let latest_version = {
-			let db_reader = executor.executor.db.reader.clone();
+			let db_reader = executor.executor.db_reader().clone();
 			db_reader.get_synced_version()?
 		};
 		assert_eq!(latest_version, version_to_revert_to);
@@ -371,8 +361,9 @@ mod tests {
 		// Create an executor instance from the environment configuration.
 		let config = Config::default();
 		let (tx_sender, _tx_receiver) = mpsc::channel(16);
-		let (executor, background) = Executor::try_from_config(tx_sender, config.clone())?;
-		let services = executor.services();
+		let executor = Executor::try_from_config(&config)?;
+		let (context, background) = executor.background(tx_sender, &config)?;
+		let services = context.services();
 		let apis = services.get_opt_apis();
 
 		let background_handle = tokio::spawn(background);
@@ -442,8 +433,9 @@ mod tests {
 		// Create an executor instance from the environment configuration.
 		let config = Config::default();
 		let (tx_sender, _tx_receiver) = mpsc::channel(16);
-		let (executor, background) = Executor::try_from_config(tx_sender, config.clone())?;
-		let services = executor.services();
+		let executor = Executor::try_from_config(&config)?;
+		let (context, background) = executor.background(tx_sender, &config)?;
+		let services = context.services();
 
 		// Retrieve the executor's fin API instance
 		let apis = services.get_fin_apis();

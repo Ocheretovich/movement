@@ -80,10 +80,7 @@ impl Executor {
 		})
 		.await??;
 
-		let proof = {
-			let reader = self.db.reader.clone();
-			reader.get_state_proof(version)?
-		};
+		let proof = self.db().reader.get_state_proof(version)?;
 
 		// Context has a reach-around to the db so the block height should
 		// have been updated to the most recently committed block.
@@ -99,20 +96,22 @@ impl Executor {
 	}
 
 	pub fn get_block_head_height(&self) -> Result<u64, anyhow::Error> {
-		let ledger_info = self.db.reader.get_latest_ledger_info()?;
-		let (_, _, new_block_event) =
-			self.db.reader.get_block_info_by_version(ledger_info.ledger_info().version())?;
+		let ledger_info = self.db().reader.get_latest_ledger_info()?;
+		let (_, _, new_block_event) = self
+			.db()
+			.reader
+			.get_block_info_by_version(ledger_info.ledger_info().version())?;
 		Ok(new_block_event.height)
 	}
 
 	pub async fn revert_block_head_to(&self, block_height: u64) -> Result<(), anyhow::Error> {
 		let (_start_ver, end_ver, block_event) =
-			self.db.reader.get_block_info_by_height(block_height)?;
+			self.db().reader.get_block_info_by_height(block_height)?;
 		let block_info = BlockInfo::new(
 			block_event.epoch(),
 			block_event.round(),
 			block_event.hash()?,
-			self.db.reader.get_accumulator_root_hash(end_ver)?,
+			self.db().reader.get_accumulator_root_hash(end_ver)?,
 			end_ver,
 			block_event.proposed_time(),
 			None,
@@ -120,7 +119,7 @@ impl Executor {
 		let ledger_info = LedgerInfo::new(block_info, HashValue::zero());
 		let aggregate_signature = AggregateSignature::empty();
 		let ledger_info = LedgerInfoWithSignatures::new(ledger_info, aggregate_signature);
-		let db_writer = self.db.writer.clone();
+		let db_writer = self.db().writer.clone();
 		tokio::task::spawn_blocking(move || db_writer.revert_commit(&ledger_info)).await??;
 		// Reset the executor state to the reverted storage
 		self.block_executor.reset()?;
@@ -129,14 +128,14 @@ impl Executor {
 
 	/// Gets the next epoch and round.
 	pub fn get_next_epoch_and_round(&self) -> Result<(u64, u64), anyhow::Error> {
-		let epoch = self.db.reader.get_latest_ledger_info()?.ledger_info().next_block_epoch();
-		let round = self.db.reader.get_latest_ledger_info()?.ledger_info().round();
+		let epoch = self.db().reader.get_latest_ledger_info()?.ledger_info().next_block_epoch();
+		let round = self.db().reader.get_latest_ledger_info()?.ledger_info().round();
 		Ok((epoch, round))
 	}
 
 	/// Gets the timestamp of the last state.
 	pub fn get_last_state_timestamp_micros(&self) -> Result<u64, anyhow::Error> {
-		let ledger_info = self.db.reader.get_latest_ledger_info()?;
+		let ledger_info = self.db().reader.get_latest_ledger_info()?;
 		Ok(ledger_info.ledger_info().timestamp_usecs())
 	}
 
@@ -265,8 +264,8 @@ mod tests {
 	async fn test_execute_block() -> Result<(), anyhow::Error> {
 		let private_key = Ed25519PrivateKey::generate_for_testing();
 		let (tx_sender, _tx_receiver) = mpsc::channel(1);
-		let (executor, context, _transaction_pipe, _tempdir) =
-			Executor::try_test_default(tx_sender, private_key)?;
+		let (executor, config, _tempdir) = Executor::try_test_default(private_key)?;
+		let (context, _transaction_pipe) = executor.background(tx_sender, &config)?;
 		let block_id = HashValue::random();
 		let block_metadata = Transaction::BlockMetadata(BlockMetadata::new(
 			block_id,
@@ -299,8 +298,8 @@ mod tests {
 		// Create an executor instance from the environment configuration.
 		let private_key = Ed25519PrivateKey::generate_for_testing();
 		let (tx_sender, _tx_receiver) = mpsc::channel(1);
-		let (executor, context, _transaction_pipe, _tempdir) =
-			Executor::try_test_default(tx_sender, private_key)?;
+		let (executor, config, _tempdir) = Executor::try_test_default(private_key)?;
+		let (context, _transaction_pipe) = executor.background(tx_sender, &config)?;
 		executor.rollover_genesis_now().await?;
 
 		// Initialize a root account using a predefined keypair and the test root address.
@@ -372,7 +371,7 @@ mod tests {
 			let block_commitment = executor.execute_block(block).await?;
 
 			// Access the database reader to verify state after execution.
-			let db_reader = executor.db.reader.clone();
+			let db_reader = executor.db_reader();
 			// Get the latest version of the blockchain state from the database.
 			let latest_version = db_reader.get_synced_version()?;
 			// Verify the transaction by its hash to ensure it was committed.
@@ -401,8 +400,8 @@ mod tests {
 		// Create an executor instance from the environment configuration.
 		let private_key = Ed25519PrivateKey::generate_for_testing();
 		let (tx_sender, _tx_receiver) = mpsc::channel(16);
-		let (executor, context, _transaction_pipe, _tempdir) =
-			Executor::try_test_default(tx_sender, private_key)?;
+		let (executor, config, _tempdir) = Executor::try_test_default(private_key)?;
+		let (context, _transaction_pipe) = executor.background(tx_sender, &config)?;
 		let service = Service::new(&context);
 		executor.rollover_genesis_now().await?;
 

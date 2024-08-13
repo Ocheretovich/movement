@@ -10,6 +10,7 @@ use tracing::info;
 use std::future::Future;
 use std::sync::Arc;
 
+#[derive(Clone)]
 /// The API service for the finality view.
 pub struct Service {
 	context: Arc<Context>,

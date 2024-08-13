@@ -14,6 +14,7 @@ use tracing::info;
 use std::future::Future;
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct Service {
 	// API context
 	context: Arc<aptos_api::Context>,
@@ -114,8 +115,8 @@ mod tests {
 	#[tokio::test]
 	async fn test_pipe_mempool_while_server_running() -> Result<(), anyhow::Error> {
 		let (tx_sender, mut tx_receiver) = mpsc::channel(16);
-		let (_executor, context, mut transaction_pipe, _tempdir) =
-			Executor::try_test_default(tx_sender, GENESIS_KEYPAIR.0.clone())?;
+		let (executor, config, _tempdir) = Executor::try_test_default(GENESIS_KEYPAIR.0.clone())?;
+		let (context, mut transaction_pipe) = executor.background(tx_sender, &config)?;
 		let service = Service::new(&context);
 		let handle = tokio::spawn(async move { service.run().await });
 

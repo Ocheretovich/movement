@@ -1,4 +1,7 @@
+mod services;
 pub mod v1;
+
+use services::Services;
 
 pub use aptos_crypto::hash::HashValue;
 pub use aptos_types::{
@@ -8,13 +11,28 @@ pub use aptos_types::{
 	transaction::signature_verified_transaction::SignatureVerifiedTransaction,
 	transaction::{SignedTransaction, Transaction},
 };
-
+use maptos_execution_util::config::Config;
 use movement_types::BlockCommitment;
 
 use async_trait::async_trait;
+use tokio::sync::mpsc::Sender;
+
+use std::future::Future;
 
 #[async_trait]
 pub trait DynOptFinExecutor {
+	type Context: MakeOptFinServices;
+
+	/// Initialize the background task responsible for transaction processing.
+	fn background(
+		&self,
+		transaction_sender: Sender<SignedTransaction>,
+		config: &Config,
+	) -> Result<
+		(Self::Context, impl Future<Output = Result<(), anyhow::Error>> + Send + 'static),
+		anyhow::Error,
+	>;
+
 	/// Executes a block optimistically
 	async fn execute_block_opt(
 		&self,
@@ -42,4 +60,8 @@ pub trait DynOptFinExecutor {
 
 	/// Decrements transactions in flight on the transaction channel.
 	fn decrement_transactions_in_flight(&self, count: u64);
+}
+
+pub trait MakeOptFinServices {
+	fn services(&self) -> Services;
 }
