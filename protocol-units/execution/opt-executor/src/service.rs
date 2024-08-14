@@ -45,19 +45,19 @@ impl Service {
 		Service { context, listen_url }
 	}
 
-	fn context(&self) -> Arc<aptos_api::Context> {
+	pub fn api_context(&self) -> Arc<aptos_api::Context> {
 		Arc::clone(&self.context)
 	}
 
 	pub fn get_apis(&self) -> Apis {
-		get_apis(self.context())
+		get_apis(self.api_context())
 	}
 
 	pub fn run(&self) -> impl Future<Output = Result<(), anyhow::Error>> + Send {
 		info!("Starting maptos-opt-executor services at: {:?}", self.listen_url);
 
 		let api_service =
-			get_api_service(self.context()).server(format!("http://{:?}", self.listen_url));
+			get_api_service(self.api_context()).server(format!("http://{:?}", self.listen_url));
 
 		let spec_json = api_service.spec_endpoint();
 		let spec_yaml = api_service.spec_endpoint_yaml();
@@ -76,7 +76,7 @@ impl Service {
 			.at("/spec.yaml", poem::get(spec_yaml))
 			.at(
 				"/set_failpoint",
-				poem::get(set_failpoints::set_failpoint_poem).data(self.context()),
+				poem::get(set_failpoints::set_failpoint_poem).data(self.api_context()),
 			)
 			.with(cors);
 

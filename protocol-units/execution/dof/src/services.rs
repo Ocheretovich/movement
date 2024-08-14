@@ -1,5 +1,7 @@
-use aptos_api::runtime::Apis;
+use aptos_api::{runtime::Apis, Context};
 use tokio::try_join;
+
+use std::sync::Arc;
 
 pub struct Services {
 	opt: maptos_opt_executor::Service,
@@ -9,6 +11,10 @@ pub struct Services {
 impl Services {
 	pub(crate) fn new(opt: maptos_opt_executor::Service, fin: maptos_fin_view::Service) -> Self {
 		Services { opt, fin }
+	}
+
+	pub fn opt_api_context(&self) -> Arc<Context> {
+		self.opt.api_context()
 	}
 
 	pub fn get_opt_apis(&self) -> Apis {
