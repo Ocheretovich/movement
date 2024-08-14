@@ -85,7 +85,7 @@ where
 	}
 
 	async fn process_block_from_da(
-		&self,
+		&mut self,
 		response: StreamReadFromHeightResponse,
 	) -> anyhow::Result<()> {
 		// get the block
@@ -159,7 +159,7 @@ where
 	/// This can be valid behavior if the block timestamps are too tightly clustered for the full node execution.
 	/// However, this has to be deterministic, otherwise nodes will not be able to agree on the block commitment.
 	async fn execute_block_with_retries(
-		&self,
+		&mut self,
 		block: Block,
 		mut block_timestamp: u64,
 	) -> anyhow::Result<BlockCommitment> {
@@ -178,7 +178,7 @@ where
 	}
 
 	async fn execute_block(
-		&self,
+		&mut self,
 		block: Block,
 		block_timestamp: u64,
 	) -> anyhow::Result<BlockCommitment> {
@@ -215,7 +215,10 @@ where
 		Ok(commitment)
 	}
 
-	async fn process_commitment_event(&self, event: BlockCommitmentEvent) -> anyhow::Result<()> {
+	async fn process_commitment_event(
+		&mut self,
+		event: BlockCommitmentEvent,
+	) -> anyhow::Result<()> {
 		match event {
 			BlockCommitmentEvent::Accepted(commitment) => {
 				debug!("Commitment accepted: {:?}", commitment);
