@@ -3,6 +3,7 @@ use m1_da_light_node_client::{
 	blob_response, BatchWriteRequest, BlobWrite, LightNodeServiceClient,
 	StreamReadFromHeightRequest,
 };
+use maptos_dof_execution::MakeOptFinServices;
 use maptos_dof_execution::{
 	v1::Executor, DynOptFinExecutor, ExecutableBlock, ExecutableTransactions, HashValue,
 	SignatureVerifiedTransaction, SignedTransaction, Transaction,
@@ -12,6 +13,7 @@ use mcr_settlement_manager::CommitmentEventStream;
 use mcr_settlement_manager::{McrSettlementManager, McrSettlementManagerOperations};
 use movement_rest::MovementRest;
 use movement_types::{Block, BlockCommitment, BlockCommitmentEvent, Commitment};
+use suzuka_config::Config;
 
 use anyhow::Context;
 use rocksdb::{ColumnFamilyDescriptor, Options, DB};
@@ -26,12 +28,11 @@ use std::time::Duration;
 
 pub struct SuzukaPartialNode<T> {
 	executor: T,
-	transaction_receiver: mpsc::Receiver<SignedTransaction>,
 	light_node_client: LightNodeServiceClient<tonic::transport::Channel>,
 	settlement_manager: McrSettlementManager,
 	commitment_events: Option<CommitmentEventStream>,
 	movement_rest: MovementRest,
-	pub config: suzuka_config::Config,
+	config: Config,
 	da_db: DaDB,
 }
 
@@ -41,33 +42,24 @@ impl<T> SuzukaPartialNode<T>
 where
 	T: DynOptFinExecutor + Send + Sync,
 {
-	fn new<C>(
+	fn new(
 		executor: T,
 		light_node_client: LightNodeServiceClient<tonic::transport::Channel>,
-		settlement_client: C,
+		settlement_manager: McrSettlementManager,
+		commitment_events: Option<CommitmentEventStream>,
 		movement_rest: MovementRest,
-		da_db: DB,
-	) -> (Self, impl Future<Output = Result<(), anyhow::Error>> + Send)
-	where
-		C: McrSettlementClientOperations + Send + 'static,
-	{
-		let (settlement_manager, commitment_events) =
-			McrSettlementManager::new(settlement_client, &config.mcr);
-		let (transaction_sender, transaction_receiver) = mpsc::channel(16);
-		let bg_executor = executor.clone();
-		(
-			Self {
-				executor,
-				transaction_sender,
-				transaction_receiver,
-				light_node_client,
-				settlement_manager,
-				movement_rest,
-				config: config.clone(),
-				da_db: Arc::new(da_db),
-			},
-			read_commitment_events(commitment_events, bg_executor),
-		)
+		config: Config,
+		da_db: DaDB,
+	) -> Self {
+		Self {
+			executor,
+			light_node_client,
+			settlement_manager,
+			commitment_events,
+			movement_rest,
+			config,
+			da_db,
+		}
 	}
 
 	fn bind_transaction_channel(&mut self) {
@@ -79,7 +71,7 @@ where
 		light_node_client: LightNodeServiceClient<tonic::transport::Channel>,
 		settlement_client: C,
 		movement_rest: MovementRest,
-		config: &suzuka_config::Config,
+		config: &Config,
 		da_db: DB,
 	) -> Result<(Self, impl Future<Output = Result<(), anyhow::Error>> + Send), anyhow::Error>
 	where
@@ -99,6 +91,11 @@ where
 	// ! Currently this only implements opt.
 	/// Runs the executor until crash or shutdown.
 	pub async fn run(self) -> Result<(), anyhow::Error> {
+		let (transaction_sender, transaction_receiver) = mpsc::channel(16);
+		let (context, exec_background) = self
+			.executor
+			.background(transaction_sender, &self.config.execution_config.maptos_config)?;
+		let services = context.services();
 		let exec_settle_task = tasks::exec_settle::Task::new(
 			self.executor,
 			self.settlement_manager,
@@ -107,16 +104,18 @@ where
 			self.commitment_events,
 		);
 		let tx_ingress_task = tasks::tx_ingress::Task::new(
-			self.transaction_receiver,
+			transaction_receiver,
 			self.light_node_client,
 			// FIXME: why are struct member names so tautological?
 			self.config.m1_da_light_node.m1_da_light_node_config,
 		);
-		let (res1, res2) = try_join!(
+		let (res1, res2, res3, res4) = try_join!(
 			tokio::spawn(async move { exec_settle_task.run().await }),
 			tokio::spawn(async move { tx_ingress_task.run().await }),
+			tokio::spawn(exec_background),
+			tokio::spawn(services.run()),
 		)?;
-		res1.and(res2)
+		res1.and(res2).and(res3).and(res4)
 	}
 
 	/// Runs the maptos rest api service until crash or shutdown.
@@ -129,9 +128,7 @@ where
 }
 
 impl SuzukaPartialNode<Executor> {
-	pub async fn try_from_config(
-		config: suzuka_config::Config,
-	) -> Result<(Self, impl Future<Output = Result<(), anyhow::Error>> + Send), anyhow::Error> {
+	pub async fn try_from_config(config: &Config) -> Result<Self, anyhow::Error> {
 		// todo: extract into getter
 		let light_node_connection_hostname = config
 			.m1_da_light_node
@@ -156,27 +153,34 @@ impl SuzukaPartialNode<Executor> {
 		.context("Failed to connect to light node")?;
 
 		debug!("Creating the executor");
-		let executor = Executor::try_from_config(tx, config.execution_config.maptos_config.clone())
+		let executor = Executor::try_from_config(&config.execution_config.maptos_config)
 			.context("Failed to create the inner executor")?;
 
 		debug!("Creating the settlement client");
-		let settlement_client = McrSettlementClient::build_with_config(config.mcr.clone())
+		let settlement_client = McrSettlementClient::build_with_config(&config.mcr)
 			.await
 			.context("Failed to build MCR settlement client with config")?;
+		let (settlement_manager, commitment_events) =
+			McrSettlementManager::new(settlement_client, &config.mcr);
+		let commitment_events =
+			if config.mcr.should_settle() { Some(commitment_events) } else { None };
 
 		debug!("Creating the movement rest service");
 		let movement_rest = MovementRest::try_from_env(Some(executor.executor.context.clone()))
 			.context("Failed to create MovementRest")?;
 
 		debug!("Creating the DA DB");
-		let da_db = Self::create_or_get_da_db(&config)
-			.await
-			.context("Failed to create or get DA DB")?;
+		let da_db =
+			DaDB::open(&config.da_db.da_db_path).context("Failed to create or get DA DB")?;
 
-		Self::bound(executor, light_node_client, settlement_client, movement_rest, &config, da_db)
-			.context(
-			"Failed to bind the executor, light node client, settlement client, and movement rest",
-		)
+		Ok(Self {
+			executor,
+			light_node_client,
+			settlement_manager,
+			commitment_events,
+			movement_rest,
+			da_db,
+		})
 	}
 
 	/// Runs the services until crash or shutdown.
