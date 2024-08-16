@@ -43,6 +43,7 @@ where
 			self.da_db,
 			self.light_node_client.clone(),
 			self.commitment_events,
+			self.config.execution_extension,
 		);
 		let tx_ingress_task = tasks::tx_ingress::Task::new(
 			transaction_receiver,

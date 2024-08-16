@@ -12,6 +12,7 @@ use maptos_dof_execution::{
 };
 use mcr_settlement_manager::{CommitmentEventStream, McrSettlementManagerOperations};
 use movement_types::{Block, BlockCommitment, BlockCommitmentEvent};
+use suzuka_config::execution_extension;
 
 use anyhow::Context;
 use futures::{future::Either, stream};
@@ -27,6 +28,7 @@ pub struct Task<E, S> {
 	// Stream receiving commitment events, conditionally enabled
 	commitment_events:
 		Either<CommitmentEventStream, stream::Pending<<CommitmentEventStream as Stream>::Item>>,
+	config: execution_extension::Config,
 }
 
 impl<E, S> Task<E, S> {
@@ -36,12 +38,20 @@ impl<E, S> Task<E, S> {
 		da_db: DaDB,
 		da_light_node_client: LightNodeServiceClient<tonic::transport::Channel>,
 		commitment_events: Option<CommitmentEventStream>,
+		config: execution_extension::Config,
 	) -> Self {
 		let commitment_events = match commitment_events {
 			Some(stream) => Either::Left(stream),
 			None => Either::Right(stream::pending()),
 		};
-		Task { executor, settlement_manager, da_db, da_light_node_client, commitment_events }
+		Task {
+			executor,
+			settlement_manager,
+			da_db,
+			da_light_node_client,
+			commitment_events,
+			config,
+		}
 	}
 
 	fn settlement_enabled(&self) -> bool {
@@ -123,9 +133,11 @@ where
 		.await??;
 
 		// get the transactions
+		let transaction_count = block.transactions.len();
 		let span = info_span!(target: "movement_timing", "execute_block", id = %block_id);
 		let commitment =
 			self.execute_block_with_retries(block, block_timestamp).instrument(span).await?;
+		self.executor.decrement_transactions_in_flight(transaction_count as u64);
 
 		// mark the da_height - 1 as synced
 		// we can't mark this height as synced because we must allow for the possibility of multiple blocks at the same height according to the m1 da specifications (which currently is built on celestia which itself allows more than one block at the same height)
@@ -163,13 +175,13 @@ where
 		block: Block,
 		mut block_timestamp: u64,
 	) -> anyhow::Result<BlockCommitment> {
-		for _ in 0..5 {
+		for _ in 0..self.config.block_retry_count {
 			// we have to clone here because the block is supposed to be consumed by the executor
 			match self.execute_block(block.clone(), block_timestamp).await {
 				Ok(commitment) => return Ok(commitment),
 				Err(e) => {
 					warn!("Failed to execute block: {:?}. Retrying", e);
-					block_timestamp += 5000; // increase the timestamp by 5 ms (5000 microseconds)
+					block_timestamp += self.config.block_retry_increment_microseconds; // increase the timestamp by 5 ms (5000 microseconds)
 				}
 			}
 		}
