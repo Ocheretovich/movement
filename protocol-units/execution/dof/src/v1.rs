@@ -1,18 +1,21 @@
 use crate::{BlockMetadata, DynOptFinExecutor, ExecutableBlock, HashValue, SignedTransaction};
 use aptos_api::runtime::Apis;
 use aptos_mempool::core_mempool::CoreMempool;
-use async_channel::Sender;
-use async_trait::async_trait;
 use maptos_fin_view::FinalityView;
 use maptos_opt_executor::transaction_pipe::TransactionPipeError;
 use maptos_opt_executor::Executor as OptExecutor;
 use movement_types::BlockCommitment;
-use std::sync::atomic::Ordering;
+
+use anyhow::format_err;
+use async_channel::Sender;
+use async_trait::async_trait;
 use tokio::time::interval;
 use tokio::time::Duration;
 use tokio_stream::wrappers::IntervalStream;
 use tokio_stream::StreamExt;
 use tracing::{debug, info};
+
+use std::sync::atomic::Ordering;
 
 #[derive(Clone)]
 pub struct Executor {
